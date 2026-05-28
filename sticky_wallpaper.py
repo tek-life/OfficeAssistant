@@ -36,6 +36,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 # ═══════════════════════════════════════════════════════════
 ctypes.windll.user32.SetProcessDPIAware()
 
+# ═══════════════════════════════════════════════════════════
+# 隐藏控制台窗口（用 py 运行 .py 时会自动弹出命令行，这里自动隐藏）
+# 对于 --noconsole 打包的 exe，GetConsoleWindow() 返回 0，ShowWindow 是空操作
+# ═══════════════════════════════════════════════════════════
+_console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+if _console_hwnd:
+    ctypes.windll.user32.ShowWindow(_console_hwnd, 0)  # SW_HIDE = 0
+
 
 # ═══════════════════════════════════════════════════════════
 # 常量 & 路径
