@@ -357,6 +357,7 @@ class WallpaperManager:
 # Win32 常量
 WM_DESTROY = 0x0002
 WM_SIZE = 0x0005
+WM_CONTEXTMENU = 0x007B
 WM_RBUTTONUP = 0x0205
 WM_USER = 0x0400
 WM_COMMAND = 0x0111
@@ -365,6 +366,7 @@ SIZE_RESTORED = 0
 CW_USEDEFAULT = 0x80000000
 WS_OVERLAPPEDWINDOW = 0x00CF0000
 WS_EX_APPWINDOW = 0x00040000
+SW_SHOW = 5
 TPM_RETURNCMD = 0x0100
 TPM_RIGHTBUTTON = 0x0002
 
@@ -411,19 +413,12 @@ class TaskbarWindow:
                 elif wp == SIZE_RESTORED:
                     self._app._on_restore()
                 return 0
-            elif msg == WM_RBUTTONUP:
+            elif msg == WM_CONTEXTMENU or msg == WM_RBUTTONUP:
                 self._show_menu(hwnd)
                 return 0
             elif msg == WM_COMMAND:
                 cmd = wp & 0xFFFF
-                if cmd == ID_RESTORE_WP:
-                    self._app.restore()
-                elif cmd == ID_REFRESH_WP:
-                    self._app.render()
-                elif cmd == ID_EDIT_TODO:
-                    self._app.edit_todos()
-                elif cmd == ID_EXIT_APP:
-                    self._app._tray_quit()
+                self._dispatch_cmd(cmd)
                 return 0
             return user32.DefWindowProcW(
                 wintypes.HWND(hwnd), wintypes.UINT(msg),
@@ -449,10 +444,23 @@ class TaskbarWindow:
             None, None, self._hinstance, None,
         )
 
+        # 必须调用 ShowWindow，窗口才会出现在任务栏
+        user32.ShowWindow(self._hwnd, SW_SHOW)
+
+    def _dispatch_cmd(self, cmd):
+        """根据菜单 ID 直接调用对应操作。"""
+        if cmd == ID_RESTORE_WP:
+            self._app.restore()
+        elif cmd == ID_REFRESH_WP:
+            self._app.render()
+        elif cmd == ID_EDIT_TODO:
+            self._app.edit_todos()
+        elif cmd == ID_EXIT_APP:
+            self._app._tray_quit()
+
     def _show_menu(self, hwnd):
         user32 = ctypes.windll.user32
         menu = user32.CreatePopupMenu()
-        # 恢复原壁纸（默认加粗）
         user32.AppendMenuW(menu, 0x0000, ID_RESTORE_WP, "恢复原壁纸")
         user32.AppendMenuW(menu, 0x0800, 0, None)  # MF_SEPARATOR
         user32.AppendMenuW(menu, 0x0000, ID_REFRESH_WP, "刷新壁纸")
@@ -468,11 +476,11 @@ class TaskbarWindow:
             menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
             pt.x, pt.y, 0, hwnd, None,
         )
-        user32.PostMessageW(hwnd, 0, 0, 0)  # 让菜单正确关闭
         user32.DestroyMenu(menu)
 
+        # TrackPopupMenu 返回选中的菜单 ID，直接派发
         if cmd:
-            user32.PostMessageW(hwnd, WM_COMMAND, cmd, 0)
+            self._dispatch_cmd(cmd)
 
     def destroy(self):
         if self._hwnd:
