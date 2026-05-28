@@ -351,144 +351,7 @@ class WallpaperManager:
 
 
 # ═══════════════════════════════════════════════════════════
-# Win32 任务栏窗口（右键菜单 + 最小化/还原）
-# ═══════════════════════════════════════════════════════════
-
-# Win32 常量
-WM_DESTROY = 0x0002
-WM_SIZE = 0x0005
-WM_CONTEXTMENU = 0x007B
-WM_RBUTTONUP = 0x0205
-WM_USER = 0x0400
-WM_COMMAND = 0x0111
-SIZE_MINIMIZED = 1
-SIZE_RESTORED = 0
-CW_USEDEFAULT = 0x80000000
-WS_OVERLAPPEDWINDOW = 0x00CF0000
-WS_EX_APPWINDOW = 0x00040000
-SW_SHOW = 5
-TPM_RETURNCMD = 0x0100
-TPM_RIGHTBUTTON = 0x0002
-
-# 菜单 ID
-ID_RESTORE_WP = 2001
-ID_REFRESH_WP = 2002
-ID_EDIT_TODO  = 2003
-ID_EXIT_APP   = 2004
-
-
-class _WNDCLASS(ctypes.Structure):
-    _fields_ = [
-        ("style", wintypes.UINT),
-        ("lpfnWndProc", ctypes.c_void_p),
-        ("cbClsExtra", ctypes.c_int),
-        ("cbWndExtra", ctypes.c_int),
-        ("hInstance", wintypes.HINSTANCE),
-        ("hIcon", wintypes.HICON),
-        ("hCursor", wintypes.HANDLE),
-        ("hbrBackground", wintypes.HBRUSH),
-        ("lpszMenuName", wintypes.LPCWSTR),
-        ("lpszClassName", wintypes.LPCWSTR),
-    ]
-
-
-class TaskbarWindow:
-    """在任务栏显示一个图标，提供右键菜单和最小化/还原行为。"""
-
-    def __init__(self, app):
-        """app: StickyWallpaper 实例，用于回调操作。"""
-        self._app = app
-        self._hwnd = None
-        self._wndproc_ref = None
-        kernel32 = ctypes.windll.kernel32
-        self._hinstance = kernel32.GetModuleHandleW(None)
-
-    def create(self):
-        user32 = ctypes.windll.user32
-
-        def _wndproc(hwnd, msg, wp, lp):
-            if msg == WM_SIZE:
-                if wp == SIZE_MINIMIZED:
-                    self._app._on_minimize()
-                elif wp == SIZE_RESTORED:
-                    self._app._on_restore()
-                return 0
-            elif msg == WM_CONTEXTMENU or msg == WM_RBUTTONUP:
-                self._show_menu(hwnd)
-                return 0
-            elif msg == WM_COMMAND:
-                cmd = wp & 0xFFFF
-                self._dispatch_cmd(cmd)
-                return 0
-            return user32.DefWindowProcW(
-                wintypes.HWND(hwnd), wintypes.UINT(msg),
-                wintypes.WPARAM(wp), wintypes.LPARAM(lp))
-
-        # 保持对回调函数的引用，防止 GC
-        self._wndproc_ref = ctypes.WINFUNCTYPE(
-            ctypes.c_long, wintypes.HWND, wintypes.UINT,
-            wintypes.WPARAM, wintypes.LPARAM)(_wndproc)
-
-        cls_name = "StickyWallpaperTaskbar"
-        wc = _WNDCLASS()
-        wc.lpfnWndProc = ctypes.cast(self._wndproc_ref, ctypes.c_void_p)
-        wc.hInstance = self._hinstance
-        wc.lpszClassName = cls_name
-        wc.hCursor = user32.LoadCursorW(None, 32512)  # IDC_ARROW
-        user32.RegisterClassW(ctypes.byref(wc))
-
-        self._hwnd = user32.CreateWindowExW(
-            WS_EX_APPWINDOW, cls_name, "便利贴壁纸",
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT, CW_USEDEFAULT, 200, 100,
-            None, None, self._hinstance, None,
-        )
-
-        # 必须调用 ShowWindow，窗口才会出现在任务栏
-        user32.ShowWindow(self._hwnd, SW_SHOW)
-
-    def _dispatch_cmd(self, cmd):
-        """根据菜单 ID 直接调用对应操作。"""
-        if cmd == ID_RESTORE_WP:
-            self._app.restore()
-        elif cmd == ID_REFRESH_WP:
-            self._app.render()
-        elif cmd == ID_EDIT_TODO:
-            self._app.edit_todos()
-        elif cmd == ID_EXIT_APP:
-            self._app._tray_quit()
-
-    def _show_menu(self, hwnd):
-        user32 = ctypes.windll.user32
-        menu = user32.CreatePopupMenu()
-        user32.AppendMenuW(menu, 0x0000, ID_RESTORE_WP, "恢复原壁纸")
-        user32.AppendMenuW(menu, 0x0800, 0, None)  # MF_SEPARATOR
-        user32.AppendMenuW(menu, 0x0000, ID_REFRESH_WP, "刷新壁纸")
-        user32.AppendMenuW(menu, 0x0000, ID_EDIT_TODO, "编辑 todos.txt")
-        user32.AppendMenuW(menu, 0x0800, 0, None)
-        user32.AppendMenuW(menu, 0x0000, ID_EXIT_APP, "退出")
-        user32.SetMenuDefaultItem(menu, ID_RESTORE_WP, False)
-
-        pt = wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(pt))
-        user32.SetForegroundWindow(hwnd)
-        cmd = user32.TrackPopupMenu(
-            menu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
-            pt.x, pt.y, 0, hwnd, None,
-        )
-        user32.DestroyMenu(menu)
-
-        # TrackPopupMenu 返回选中的菜单 ID，直接派发
-        if cmd:
-            self._dispatch_cmd(cmd)
-
-    def destroy(self):
-        if self._hwnd:
-            ctypes.windll.user32.DestroyWindow(self._hwnd)
-            self._hwnd = None
-# ═══════════════════════════════════════════════════════════
-
-class StickyWallpaper:
+# 主程序
     """应用主类：串联 todo 解析 → 渲染 → 壁纸设置 → 系统托盘。"""
 
     DEFAULT_CONFIG = {
@@ -503,8 +366,6 @@ class StickyWallpaper:
         self._render_lock = threading.Lock()
         self._mutex_handle = None
         self._event_handle = None
-        self._taskbar_win = None
-        self._minimized = False
         self._acquire_singleton()
         self.config = self._load_config()
         self.wm = WallpaperManager()
@@ -614,8 +475,6 @@ class StickyWallpaper:
 
     # --- 核心：渲染壁纸 ---
     def render(self):
-        if self._minimized:
-            return  # 最小化状态下不渲染
         with self._render_lock:
             self._do_render()
 
@@ -704,19 +563,7 @@ class StickyWallpaper:
             original = BACKUP_WALLPAPER.read_text(encoding="utf-8").strip()
             if os.path.exists(original):
                 self.wm.set_image(original)
-                self._minimized = True
                 print("已还原壁纸。")
-
-    # --- 最小化/还原回调（任务栏窗口） ---
-    def _on_minimize(self):
-        """窗口被最小化时，恢复原始壁纸。"""
-        self.restore()
-
-    def _on_restore(self):
-        """窗口从最小化恢复时，重新渲染便利贴。"""
-        self._minimized = False
-        self.render()
-        print("[还原] 已重新渲染便利贴。")
 
     # --- 编辑 todos ---
     def edit_todos(self):
@@ -754,8 +601,6 @@ class StickyWallpaper:
         if icon:
             icon.stop()
         self.restore()
-        if self._taskbar_win:
-            self._taskbar_win.destroy()
         self._release_singleton()
         # 清理临时文件
         try:
@@ -787,9 +632,6 @@ class StickyWallpaper:
 
     def run(self):
         self.setup_tray()
-        # 创建任务栏窗口（右键菜单 + 最小化/还原）
-        self._taskbar_win = TaskbarWindow(self)
-        self._taskbar_win.create()
         # 启动定时刷新线程
         threading.Thread(target=self._refresh_loop, daemon=True).start()
         # 托盘阻塞主线程
