@@ -5,6 +5,7 @@ dist/
 
 # Runtime generated files
 rendered_wallpaper.bmp
+.original_wallpaper.jpg
 .original_wallpaper.txt
 *.pid
 

@@ -62,7 +62,7 @@ else:
     SCRIPT_DIR = Path(__file__).parent.resolve()
 TODOS_FILE = SCRIPT_DIR / "todos.txt"
 CONFIG_FILE = SCRIPT_DIR / "config.json"
-BACKUP_WALLPAPER = SCRIPT_DIR / ".original_wallpaper.txt"
+BACKUP_WALLPAPER = SCRIPT_DIR / ".original_wallpaper.jpg"
 RENDERED_WALLPAPER = SCRIPT_DIR / "rendered_wallpaper.bmp"
 
 # Windows API
@@ -400,8 +400,6 @@ class StickyWallpaper:
         self._acquire_singleton()
         self.config = self._load_config()
         self.wm = WallpaperManager()
-        self.original_wp = self.wm.get_current() or ""
-        self._save_backup()
         self.tray = None
 
         # 字体
@@ -486,10 +484,15 @@ class StickyWallpaper:
                 pass
         return cfg
 
-    # --- 壁纸备份 ---
-    def _save_backup(self):
-        if self.original_wp:
-            BACKUP_WALLPAPER.write_text(self.original_wp, encoding="utf-8")
+    # --- 壁纸备份（复制原始壁纸文件，而非只存路径）---
+    def _save_backup(self, source_path: str):
+        """将原始壁纸文件复制一份保存，避免 Bing 删除旧图后路径失效。"""
+        try:
+            img = Image.open(source_path)
+            img.save(str(BACKUP_WALLPAPER), "JPEG", quality=95)
+            print(f"[备份] 已保存原始壁纸: {source_path}")
+        except Exception as e:
+            print(f"[备份] 保存失败: {e}")
 
     # --- 示例 todos ---
     def _ensure_todos_file(self):
@@ -520,29 +523,22 @@ class StickyWallpaper:
             print("todos.txt 为空，跳过渲染。")
             return
 
-        # 获取 / 生成底图
         sw, sh = self.wm.get_screen_size()
-
-        # 每次渲染都动态读取当前壁纸
         current_wp = self.wm.get_current() or ""
         rendered_path = str(RENDERED_WALLPAPER)
 
-        # 判断当前壁纸是否是我们上次渲染的
+        # 判断当前壁纸是否是我们渲染的
         is_ours = (os.path.normcase(current_wp) == os.path.normcase(rendered_path))
 
-        if is_ours:
-            # 当前壁纸就是我们渲染的，用备份的原始壁纸做底
-            base_path = self.original_wp
-        else:
-            # 用户换了壁纸，用新的壁纸做底，并更新备份
-            base_path = current_wp
-            if current_wp and current_wp != self.original_wp:
-                self.original_wp = current_wp
-                BACKUP_WALLPAPER.write_text(current_wp, encoding="utf-8")
+        if not is_ours:
+            # 用户换了壁纸（如 Bing 每日更新），把新壁纸复制一份作为备份
+            if current_wp and os.path.exists(current_wp):
+                self._save_backup(current_wp)
 
-        if base_path and os.path.exists(base_path):
+        # 始终用备份文件做底图（备份是干净的原始壁纸副本）
+        if BACKUP_WALLPAPER.exists():
             try:
-                base = Image.open(base_path).convert("RGB")
+                base = Image.open(str(BACKUP_WALLPAPER)).convert("RGB")
                 base = base.resize((sw, sh), Image.LANCZOS)
             except Exception:
                 base = self._gradient(sw, sh)
@@ -595,10 +591,10 @@ class StickyWallpaper:
     # --- 还原壁纸 ---
     def restore(self):
         if BACKUP_WALLPAPER.exists():
-            original = BACKUP_WALLPAPER.read_text(encoding="utf-8").strip()
-            if os.path.exists(original):
-                self.wm.set_image(original)
-                print("已还原壁纸。")
+            self.wm.set_image(str(BACKUP_WALLPAPER))
+            print("已还原壁纸。")
+        else:
+            print("未找到备份壁纸，无法还原。")
 
     # --- 编辑 todos ---
     def edit_todos(self):
