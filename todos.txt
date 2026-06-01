@@ -1,3 +1,7 @@
-# 今日待办
+5-29：
 - [ ] 用embedding或者any为例，看懂算子的逻辑。
-- [ ] 用embedding或者any为例，看懂框架层都做了什么事情。
+- [x] 用embedding或者any为例，看懂框架层都做了什么事情。
+
+# TODO
+- [ ] GDMU的源码，看一下。
+- [ ] DFCA kernel case为啥没有debug info?

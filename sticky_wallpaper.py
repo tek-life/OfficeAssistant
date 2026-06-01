@@ -8,10 +8,16 @@ StickyWallpaper — 把每日 TODO 以便利贴风格渲染到桌面壁纸上。
   3. 运行:      python sticky_wallpaper.py
 
 todos.txt 格式:
-  # 标题（可选）
+  文件分为两个区域，以 "# TODO" 为分界：
+
+  # 个人笔记（或任意标题）
+  这里的内容不会显示在桌面上，当作个人注释/备忘。
+
+  # TODO
   - [ ] 未完成事项
   - [x] 已完成事项
-  空行会被忽略
+  只有 "# TODO" 下方的条目才会渲染到桌面壁纸上。
+  遇到下一个 "#" 标题时停止读取。
 """
 
 import ctypes
@@ -104,21 +110,43 @@ class TodoItem:
 
 
 def parse_todos(path: Path) -> tuple:
-    """解析 todos.txt，返回 (title, [TodoItem])。"""
+    """
+    解析 todos.txt，返回 (title, [TodoItem])。
+
+    规则：只读取第一个 "# TODO" 标题下方的条目。
+    该标题之前的所有内容视为个人笔记/注释，不会显示在桌面上。
+    遇到下一个 "#" 标题时停止读取。
+    """
     if not path.exists():
         return "今日待办", []
 
     title = "今日待办"
     items: List[TodoItem] = []
+    in_target_section = False
 
     with open(path, "r", encoding="utf-8") as f:
         for raw in f:
             line = raw.strip()
             if not line:
                 continue
+
+            # 检测标题行
             if line.startswith("#"):
-                title = line.lstrip("#").strip()
+                heading = line.lstrip("#").strip()
+                if heading.upper() == "TODO":
+                    # 进入目标分区
+                    in_target_section = True
+                    # 如果 # TODO 后面跟了额外文字，用它作为标题
+                    # 例如 "# TODO 今日待办" → 标题为 "今日待办"
+                    continue
+                elif in_target_section:
+                    # 遇到下一个标题，停止读取
+                    break
                 continue
+
+            if not in_target_section:
+                continue
+
             done = False
             for prefix in ("- [x] ", "- [X] ", "* [x] ", "* [X] "):
                 if line.startswith(prefix):
@@ -467,7 +495,11 @@ class StickyWallpaper:
     def _ensure_todos_file(self):
         if not TODOS_FILE.exists():
             sample = (
-                "# 今日待办\n"
+                "# 个人笔记\n"
+                "这里写的内容不会显示在桌面上。\n"
+                "可以用来记录想法、灵感、备忘等。\n"
+                "\n"
+                "# TODO\n"
                 "- [ ] 完成项目报告\n"
                 "- [ ] 回复邮件\n"
                 "- [x] 更新工作日志\n"
