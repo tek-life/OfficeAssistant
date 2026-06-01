@@ -667,10 +667,10 @@ class StickyWallpaper:
 
     def run(self):
         self.setup_tray()
-        # 启动定时刷新线程
-        threading.Thread(target=self._refresh_loop, daemon=True).start()
-        # 托盘阻塞主线程
-        self.tray.run()
+        # 托盘图标在独立线程运行（避免阻塞主线程导致右键菜单无响应）
+        self.tray.run_detached()
+        # 主线程做定时刷新
+        self._refresh_loop()
 
 
 # ═══════════════════════════════════════════════════════════
