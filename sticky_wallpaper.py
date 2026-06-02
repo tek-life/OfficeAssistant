@@ -619,13 +619,13 @@ class StickyWallpaper:
         return img
 
     def _tray_refresh(self):
-        self.render()
+        threading.Thread(target=self.render, daemon=True).start()
 
     def _tray_edit(self):
-        self.edit_todos()
+        threading.Thread(target=self.edit_todos, daemon=True).start()
 
     def _tray_restore(self):
-        self.restore()
+        threading.Thread(target=self.restore, daemon=True).start()
 
     def _tray_quit(self, icon=None):
         self._running = False
