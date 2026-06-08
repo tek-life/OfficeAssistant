@@ -519,9 +519,6 @@ class StickyWallpaper:
     def _do_render(self):
         self._ensure_todos_file()
         title, items = parse_todos(TODOS_FILE)
-        if not items:
-            print("todos.txt 为空，跳过渲染。")
-            return
 
         sw, sh = self.wm.get_screen_size()
         current_wp = self.wm.get_current() or ""
@@ -534,6 +531,12 @@ class StickyWallpaper:
             # 用户换了壁纸（如 Bing 每日更新），把新壁纸复制一份作为备份
             if current_wp and os.path.exists(current_wp):
                 self._save_backup(current_wp)
+
+        if not items:
+            # TODO 列表为空，还原为干净壁纸
+            print("TODO 列表为空，还原干净壁纸。")
+            self.restore()
+            return
 
         # 始终用备份文件做底图（备份是干净的原始壁纸副本）
         if BACKUP_WALLPAPER.exists():
