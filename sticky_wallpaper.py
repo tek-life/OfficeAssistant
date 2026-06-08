@@ -532,12 +532,6 @@ class StickyWallpaper:
             if current_wp and os.path.exists(current_wp):
                 self._save_backup(current_wp)
 
-        if not items:
-            # TODO 列表为空，还原为干净壁纸
-            print("TODO 列表为空，还原干净壁纸。")
-            self.restore()
-            return
-
         # 始终用备份文件做底图（备份是干净的原始壁纸副本）
         if BACKUP_WALLPAPER.exists():
             try:
