@@ -491,6 +491,16 @@ class StickyWallpaper:
                 cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
             except Exception:
                 pass
+        else:
+            # 首次运行：生成默认 config.json
+            try:
+                CONFIG_FILE.write_text(
+                    json.dumps(cfg, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                print(f"[配置] 已生成默认配置文件: {CONFIG_FILE}")
+            except Exception as e:
+                print(f"[配置] 生成配置文件失败: {e}")
         return cfg
 
     # --- 壁纸备份（复制原始壁纸文件，而非只存路径）---
