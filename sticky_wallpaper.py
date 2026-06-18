@@ -746,6 +746,8 @@ $notifier.Show($toast)
                 self.tray.update_menu()
             except Exception:
                 pass
+        # 立即刷新壁纸，让倒计时马上显示（或消失）
+        threading.Thread(target=self.render, daemon=True).start()
 
     # --- 系统托盘 ---
     def _make_icon_image(self):
