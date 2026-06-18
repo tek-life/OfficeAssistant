@@ -231,7 +231,8 @@ class StickyNoteRenderer:
 
     # --- 绘制单张便利贴 ---
     def draw(self, base: Image.Image, title, items: list, date_str: str,
-             position: tuple, color_idx: int = 0, rotation: float = -1.5):
+             position: tuple, color_idx: int = 0, rotation: float = -1.5,
+             pomodoro_text: str = ""):
         note_w = 600  # 宽度增加 50%
         pad = 16
         x_margin = 22       # 内容区左内边距
@@ -251,8 +252,10 @@ class StickyNoteRenderer:
             lines = self._wrap_text(item.text, self.fi, content_w, td)
             wrapped_items.append((item, lines))
 
-        # 头部固定区域: 标题 + 日期 + 分割线
+        # 头部固定区域: 标题 + 日期 + 番茄钟(可选) + 分割线
         header_h = 42 + 24 + 14  # title + date + line+gap = 80
+        if pomodoro_text:
+            header_h += 24  # 番茄钟行
         # 条目区域
         items_h = 0
         for item, lines in wrapped_items:
@@ -294,6 +297,12 @@ class StickyNoteRenderer:
         # 日期
         d.text((x0, y_cursor), date_str, fill=(140, 140, 140, 230), font=self.fs)
         y_cursor += 24
+
+        # 番茄钟倒计时
+        if pomodoro_text:
+            d.text((x0, y_cursor), pomodoro_text,
+                   fill=accent_rgb + (220,), font=self.fs)
+            y_cursor += 24
 
         # 分割线
         d.line([(x0, y_cursor), (x0 + note_w - 50, y_cursor)],
@@ -570,6 +579,21 @@ class StickyWallpaper:
                     "星期日"]
         date_str = f"{now.year}年{now.month}月{now.day}日  {weekdays[now.weekday()]}"
 
+        # 番茄钟倒计时
+        pomodoro_text = ""
+        if self._pomodoro_enabled:
+            interval = self.config["pomodoro_interval_minutes"] * 60
+            elapsed = time.time() - self._pomodoro_last_break
+            if elapsed >= interval:
+                # 正在休息中（已过了关屏时刻但还没到下次计时起点）
+                break_end = self._pomodoro_last_break + \
+                    self.config["pomodoro_break_minutes"] * 60
+                remain = max(0, int(break_end - time.time()))
+                pomodoro_text = f"\u23F8  休息中  {remain // 60:02d}:{remain % 60:02d}"
+            else:
+                remain = max(0, int(interval - elapsed))
+                pomodoro_text = f"\u23F1  {remain // 60:02d}:{remain % 60:02d}  距下次休息"
+
         # 位置
         note_w, note_h = 640, 500  # 含阴影边距（宽度增加后）
         margin = self.config["margin"]
@@ -584,7 +608,8 @@ class StickyWallpaper:
 
         # 渲染便利贴
         self.renderer.draw(base, title, items, date_str, pos,
-                           color_idx=0, rotation=-1.5)
+                           color_idx=0, rotation=-1.5,
+                           pomodoro_text=pomodoro_text)
 
         # 保存 & 设置
         out = base.convert("RGB")
