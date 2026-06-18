@@ -73,6 +73,9 @@ SPIF_SENDWININICHANGE = 0x02
 ERROR_ALREADY_EXISTS = 183
 WAIT_OBJECT_0 = 0
 WAIT_TIMEOUT = 0x00000102
+SC_MONITORPOWER = 0xF170
+HWND_BROADCAST = 0xFFFF
+WM_SYSCOMMAND = 0x0112
 
 # 单例标识
 MUTEX_NAME = "Global\\StickyWallpaper_SingleInstance"
@@ -389,6 +392,9 @@ class StickyWallpaper:
         "refresh_minutes": 5,
         "note_position": "top_right",
         "margin": 60,
+        "pomodoro_enabled": False,
+        "pomodoro_interval_minutes": 60,
+        "pomodoro_break_minutes": 5,
     }
 
     def __init__(self):
@@ -397,6 +403,9 @@ class StickyWallpaper:
         self._render_lock = threading.Lock()
         self._mutex_handle = None
         self._event_handle = None
+        self._pomodoro_thread = None
+        self._pomodoro_enabled = False
+        self._pomodoro_last_break = time.time()
         self._acquire_singleton()
         self.config = self._load_config()
         self.wm = WallpaperManager()
@@ -604,6 +613,105 @@ class StickyWallpaper:
                 continue
         os.startfile(str(TODOS_FILE))
 
+    # --- 番茄钟（休息提醒：定时关屏）---
+    def _pomodoro_loop(self):
+        """番茄钟后台线程：每隔 interval 分钟关屏 break_minutes 分钟，提醒休息。"""
+        print("[番茄钟] 后台线程已启动")
+        while self._running:
+            # 等待 1 秒，检查是否启用
+            time.sleep(1)
+            if not self._running:
+                break
+            if not self._pomodoro_enabled:
+                continue
+
+            # 检查是否到达休息时间
+            interval = self.config["pomodoro_interval_minutes"] * 60
+            elapsed = time.time() - self._pomodoro_last_break
+            if elapsed < interval:
+                continue
+
+            # ── 触发休息 ──
+            break_mins = self.config["pomodoro_break_minutes"]
+            print(f"[番茄钟] 已工作 {int(elapsed // 60)} 分钟，提醒你休息一下！")
+
+            # 1. 弹出 Windows 通知
+            self._notify_break(break_mins)
+
+            # 2. 等待 5 秒让用户看到通知
+            for _ in range(5):
+                if not self._running:
+                    return
+                time.sleep(1)
+
+            # 3. 关闭显示器（鼠标/键盘移动即可唤醒）
+            self._turn_off_monitor()
+
+            # 4. 记录本次休息时间（加上休息时长，避免立即再次触发）
+            self._pomodoro_last_break = time.time() + break_mins * 60
+
+        print("[番茄钟] 后台线程已退出")
+
+    def _turn_off_monitor(self):
+        """通过 Win32 API 关闭显示器（任何鼠标/键盘操作即可唤醒）。"""
+        ctypes.windll.user32.SendMessageW(
+            HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2,
+        )
+
+    def _notify_break(self, break_minutes):
+        """通过 Windows Toast 弹出休息提醒通知。"""
+        break_secs = break_minutes * 60
+        # PowerShell toast 通知脚本（写入临时文件避免转义问题）
+        ps_script = f"""\
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+
+$xml = @'
+<toast duration="long">
+    <visual>
+        <binding template="ToastGeneric">
+            <text>&#x23F0; &#x4F11;&#x606F;&#x63D0;&#x9192;</text>
+            <text>&#x8FDE;&#x7EED;&#x5DE5;&#x4F5C;&#x592A;&#x4E45;&#x5566;&#xFF01;&#x5C4F;&#x5E55;&#x5C06;&#x5728; 5 &#x79D2;&#x540E;&#x5173;&#x95ED;&#xFF0C;&#x4F11;&#x606F; {break_minutes} &#x5206;&#x949F;&#x3002;&#x79FB;&#x52A8;&#x9F20;&#x6807;&#x5373;&#x53EF;&#x5524;&#x9192;&#x3002;</text>
+        </binding>
+    </visual>
+    <audio src="ms-winsoundevent:Notification.Reminder"/>
+</toast>
+'@
+
+$xmlDoc = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xmlDoc.LoadXml($xml)
+$toast = [Windows.UI.Notifications.ToastNotification]::new($xmlDoc)
+$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("StickyWallpaper")
+$notifier.Show($toast)
+"""
+        tmp = SCRIPT_DIR / ".toast_notify.ps1"
+        try:
+            tmp.write_text(ps_script, encoding="utf-8-sig")
+            subprocess.Popen(
+                ["powershell.exe", "-ExecutionPolicy", "Bypass",
+                 "-NonInteractive", "-File", str(tmp)],
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            print(f"[番茄钟] 通知发送失败: {e}")
+
+    def _toggle_pomodoro(self, icon=None, item=None):
+        """托盘菜单切换番茄钟开关。"""
+        self._pomodoro_enabled = not self._pomodoro_enabled
+        if self._pomodoro_enabled:
+            self._pomodoro_last_break = time.time()
+            print(f"[番茄钟] 已开启 — 每 {self.config['pomodoro_interval_minutes']} 分钟提醒休息")
+        else:
+            print("[番茄钟] 已关闭")
+        # 刷新托盘菜单以更新勾选状态
+        if self.tray:
+            try:
+                self.tray.update_menu()
+            except Exception:
+                pass
+
     # --- 系统托盘 ---
     def _make_icon_image(self):
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
@@ -626,6 +734,7 @@ class StickyWallpaper:
 
     def _tray_quit(self, icon=None):
         self._running = False
+        self._pomodoro_enabled = False  # 停止番茄钟线程
         if icon:
             icon.stop()
         self.restore()
@@ -642,6 +751,9 @@ class StickyWallpaper:
         menu = pystray.Menu(
             pystray.MenuItem("刷新壁纸", self._tray_refresh, default=True),
             pystray.MenuItem("编辑 todos.txt", self._tray_edit),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("番茄钟休息提醒", self._toggle_pomodoro,
+                             checked=lambda item: self._pomodoro_enabled),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("还原壁纸", self._tray_restore),
             pystray.MenuItem("退出", self._tray_quit),
@@ -662,6 +774,10 @@ class StickyWallpaper:
         self.setup_tray()
         # 托盘图标在独立线程运行（避免阻塞主线程导致右键菜单无响应）
         self.tray.run_detached()
+        # 番茄钟后台线程（定时关屏提醒休息）
+        self._pomodoro_thread = threading.Thread(
+            target=self._pomodoro_loop, daemon=True)
+        self._pomodoro_thread.start()
         # 主线程做定时刷新
         self._refresh_loop()
 
