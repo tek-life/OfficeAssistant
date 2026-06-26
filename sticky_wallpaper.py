@@ -417,6 +417,7 @@ class StickyWallpaper:
         self._pomodoro_last_break = time.time()
         self._acquire_singleton()
         self.config = self._load_config()
+        self._pomodoro_enabled = self.config.get("pomodoro_enabled", False)
         self.wm = WallpaperManager()
         self.tray = None
 
@@ -511,6 +512,16 @@ class StickyWallpaper:
             except Exception as e:
                 print(f"[配置] 生成配置文件失败: {e}")
         return cfg
+
+    def _save_config(self):
+        """将当前配置保存到 config.json。"""
+        try:
+            CONFIG_FILE.write_text(
+                json.dumps(self.config, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as e:
+            print(f"[配置] 保存配置文件失败: {e}")
 
     # --- 壁纸备份（复制原始壁纸文件，而非只存路径）---
     def _save_backup(self, source_path: str):
@@ -734,6 +745,8 @@ class StickyWallpaper:
     def _toggle_pomodoro(self, icon=None, item=None):
         """托盘菜单切换番茄钟开关。"""
         self._pomodoro_enabled = not self._pomodoro_enabled
+        self.config["pomodoro_enabled"] = self._pomodoro_enabled
+        self._save_config()
         if self._pomodoro_enabled:
             self._pomodoro_last_break = time.time()
             print(f"[番茄钟] 已开启 — 每 {self.config['pomodoro_interval_minutes']} 分钟提醒休息")
