@@ -804,9 +804,7 @@ class StickyWallpaper:
                 self.render()
             except Exception as e:
                 print(f"渲染失败: {e}")
-            # 番茄钟激活时每分钟刷新，让倒计时更实时
-            sleep_time = 60 if self._pomodoro_enabled else interval
-            time.sleep(sleep_time)
+            time.sleep(interval)
 
     def run(self):
         self.setup_tray()
