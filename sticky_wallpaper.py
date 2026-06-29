@@ -28,6 +28,7 @@ import time
 import threading
 import subprocess
 import winreg
+import tkinter as tk
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
@@ -659,9 +660,9 @@ class StickyWallpaper:
                 continue
         os.startfile(str(TODOS_FILE))
 
-    # --- 番茄钟（休息提醒：定时关屏）---
+    # --- 番茄钟（休息提醒：定时提醒休息）---
     def _pomodoro_loop(self):
-        """番茄钟后台线程：工作倒计时 + 关屏休息 + 对话框提醒。"""
+        """番茄钟后台线程：工作倒计时 + 全屏休息倒计时 + 选择对话框。"""
         print("[番茄钟] 后台线程已启动")
         while self._running:
             time.sleep(1)
@@ -674,7 +675,6 @@ class StickyWallpaper:
                 if not self._running or not self._pomodoro_enabled:
                     break
                 time.sleep(1)
-                # 每 60 秒渲染一次，让倒计时分钟级更新
                 if _ % 60 == 59:
                     try:
                         self.render()
@@ -686,32 +686,34 @@ class StickyWallpaper:
                 elapsed = time.time() - self._pomodoro_last_break
                 print(f"[番茄钟] 已工作 {int(elapsed // 60)} 分钟，提醒你休息！")
 
-                # 1. 弹出对话框（阻塞直到用户点确定）
-                self._show_break_dialog(break_mins)
-
+                # 1. 弹出选择窗口：休息 / 再工作5分钟 / 跳过
+                choice = self._show_break_choice(break_mins)
                 if not self._running:
                     break
 
-                # 2. 等待 5 秒让用户准备
-                for _ in range(5):
+                if choice == "rest":
+                    # 2. 显示全屏休息倒计时（可跳过）
+                    skipped = self._show_break_overlay(break_mins)
                     if not self._running:
-                        return
-                    time.sleep(1)
+                        break
+                    if skipped:
+                        print("[番茄钟] 用户跳过了休息")
+                    else:
+                        print("[番茄钟] 休息结束")
+                    # 重置计时器，开始下一个工作周期
+                    self._pomodoro_last_break = time.time()
 
-                # 3. 关闭显示器
-                self._turn_off_monitor()
+                elif choice == "snooze":
+                    # 再工作5分钟：设置 last_break 让计时器在5分钟后再次触发
+                    self._pomodoro_last_break = time.time() - (interval - 5 * 60)
+                    print("[番茄钟] 用户选择再工作5分钟")
 
-                # 4. 记录休息时间（加上休息时长避免立即再触发）
-                self._pomodoro_last_break = time.time() + break_mins * 60
+                else:  # skip
+                    # 跳过休息，重置计时器
+                    self._pomodoro_last_break = time.time()
+                    print("[番茄钟] 用户跳过休息")
 
-                # 5. 等待休息结束
-                for _ in range(break_mins * 60):
-                    if not self._running:
-                        return
-                    time.sleep(1)
-
-                # 6. 休息结束，刷新壁纸（清除"休息中"状态）
-                print("[番茄钟] 休息结束")
+                # 刷新壁纸，清除"休息中"状态
                 try:
                     self.render()
                 except Exception as e:
@@ -719,28 +721,154 @@ class StickyWallpaper:
 
         print("[番茄钟] 后台线程已退出")
 
-    def _turn_off_monitor(self):
-        """通过 Win32 API 关闭显示器（任何鼠标/键盘操作即可唤醒）。"""
-        ctypes.windll.user32.SendMessageW(
-            HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2,
-        )
+    def _show_break_choice(self, break_minutes):
+        """
+        弹出选择窗口：休息一下 / 再工作5分钟 / 跳过。
+        返回 "rest" / "snooze" / "skip"。
+        """
+        result = ["skip"]  # 默认跳过（窗口意外关闭时）
 
-    def _show_break_dialog(self, break_minutes):
-        """弹出 MessageBoxW 对话框提醒休息（用户点确定后关闭）。"""
-        MB_OK = 0x00000000
-        MB_ICONINFORMATION = 0x00000040
+        def make_choice(choice):
+            result[0] = choice
+            root.destroy()
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+
+        dialog = tk.Toplevel(root)
+        dialog.title("休息提醒")
+        dialog.configure(bg="#f5f5f5")
+        dialog.attributes("-topmost", True)
+        dialog.resizable(False, False)
+
+        # 居中
+        dw, dh = 480, 220
+        sx = (dialog.winfo_screenwidth() - dw) // 2
+        sy = (dialog.winfo_screenheight() - dh) // 2
+        dialog.geometry(f"{dw}x{dh}+{sx}+{sy}")
+
+        # 标题
+        tk.Label(
+            dialog,
+            text="连续工作太久了！",
+            font=("Microsoft YaHei UI", 16, "bold"),
+            bg="#f5f5f5", fg="#333333",
+        ).pack(pady=(24, 6))
+
+        # 副标题
+        tk.Label(
+            dialog,
+            text="你想怎么做？",
+            font=("Microsoft YaHei UI", 11),
+            bg="#f5f5f5", fg="#888888",
+        ).pack(pady=(0, 20))
+
+        # 按钮行
+        btn_frame = tk.Frame(dialog, bg="#f5f5f5")
+        btn_frame.pack(pady=(0, 16))
+
+        tk.Button(
+            btn_frame, text=f"休息一下（{break_minutes}分钟）",
+            font=("Microsoft YaHei UI", 10),
+            bg="#4CAF50", fg="white", padx=14, pady=6,
+            command=lambda: make_choice("rest"),
+        ).grid(row=0, column=0, padx=6)
+
+        tk.Button(
+            btn_frame, text="再工作5分钟",
+            font=("Microsoft YaHei UI", 10),
+            bg="#FF9800", fg="white", padx=14, pady=6,
+            command=lambda: make_choice("snooze"),
+        ).grid(row=0, column=1, padx=6)
+
+        tk.Button(
+            btn_frame, text="跳过",
+            font=("Microsoft YaHei UI", 10),
+            bg="#9E9E9E", fg="white", padx=14, pady=6,
+            command=lambda: make_choice("skip"),
+        ).grid(row=0, column=2, padx=6)
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: make_choice("skip"))
+        dialog.transient()
+        dialog.grab_set()
+        dialog.mainloop()
+
         try:
-            ctypes.windll.user32.MessageBoxW(
-                0,
-                f"连续工作太久了！\n\n"
-                f"屏幕即将关闭，请休息一下。\n"
-                f"休息时间：{break_minutes} 分钟\n\n"
-                f"移动鼠标或按键盘即可唤醒屏幕。",
-                "⏰ 休息提醒 - 便利贴壁纸",
-                MB_OK | MB_ICONINFORMATION,
-            )
-        except Exception as e:
-            print(f"[番茄钟] 对话框显示失败: {e}")
+            root.destroy()
+        except Exception:
+            pass
+
+        return result[0]
+
+    def _show_break_overlay(self, break_minutes):
+        """
+        全屏休息倒计时覆盖窗口。返回 True 表示用户跳过，False 表示休息完成。
+        """
+        result = {"skipped": False}
+        remaining = [break_minutes * 60]
+
+        root = tk.Tk()
+        root.attributes("-fullscreen", True)
+        root.attributes("-topmost", True)
+        root.configure(bg="#0d0d1a")
+        root.overrideredirect(True)
+
+        # 标题
+        tk.Label(
+            root,
+            text="休息时间",
+            font=("Microsoft YaHei UI", 28),
+            fg="#888899", bg="#0d0d1a",
+        ).pack(pady=(120, 10))
+
+        # 倒计时
+        countdown_label = tk.Label(
+            root,
+            text="",
+            font=("Microsoft YaHei UI", 80, "bold"),
+            fg="#ffffff", bg="#0d0d1a",
+        )
+        countdown_label.pack()
+
+        # 提示
+        tk.Label(
+            root,
+            text="活动一下身体，看看远处，让眼睛休息",
+            font=("Microsoft YaHei UI", 14),
+            fg="#666677", bg="#0d0d1a",
+        ).pack(pady=(20, 40))
+
+        # 跳过按钮
+        skip_btn = tk.Button(
+            root,
+            text="跳过休息，继续工作",
+            font=("Microsoft YaHei UI", 11),
+            bg="#1a1a2e", fg="#888899",
+            relief="flat", padx=20, pady=8,
+            activebackground="#2a2a4e", activeforeground="#aaaabb",
+        )
+        skip_btn.pack()
+
+        def update_countdown():
+            if remaining[0] <= 0:
+                root.destroy()
+                return
+            m, s = divmod(remaining[0], 60)
+            countdown_label.config(text=f"{m:02d}:{s:02d}")
+            remaining[0] -= 1
+            root.after(1000, update_countdown)
+
+        def skip():
+            result["skipped"] = True
+            root.destroy()
+
+        skip_btn.config(command=skip)
+        root.bind("<Escape>", lambda e: skip())
+        update_countdown()
+        root.mainloop()
+
+        return result["skipped"]
 
     def _toggle_pomodoro(self, icon=None, item=None):
         """托盘菜单切换番茄钟开关。"""
