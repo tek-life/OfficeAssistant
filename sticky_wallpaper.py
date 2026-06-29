@@ -249,7 +249,7 @@ class StickyNoteRenderer:
 
         # 预计算每个 item 的行数
         wrapped_items = []
-        for item in items[:12]:  # 最多显示 12 条
+        for item in items:  # 显示所有条目，不限制数量
             lines = self._wrap_text(item.text, self.fi, content_w, td)
             wrapped_items.append((item, lines))
 
@@ -419,6 +419,7 @@ class StickyWallpaper:
         self._acquire_singleton()
         self.config = self._load_config()
         self._pomodoro_enabled = self.config.get("pomodoro_enabled", False)
+        self._work_duration = self.config.get("pomodoro_interval_minutes", 60) * 60
         self.wm = WallpaperManager()
         self.tray = None
 
@@ -594,10 +595,10 @@ class StickyWallpaper:
         # 番茄钟倒计时
         pomodoro_text = ""
         if self._pomodoro_enabled:
-            interval = self.config["pomodoro_interval_minutes"] * 60
+            interval = self._work_duration
             elapsed = time.time() - self._pomodoro_last_break
             if elapsed >= interval:
-                # 正在休息中（已过了关屏时刻但还没到下次计时起点）
+                # 正在休息中（已过了工作时长但还没开始休息）
                 break_end = self._pomodoro_last_break + \
                     self.config["pomodoro_break_minutes"] * 60
                 remain = max(0, int(break_end - time.time()))
@@ -664,60 +665,71 @@ class StickyWallpaper:
     def _pomodoro_loop(self):
         """番茄钟后台线程：工作倒计时 + 全屏休息倒计时 + 选择对话框。"""
         print("[番茄钟] 后台线程已启动")
+        self._work_duration = self.config["pomodoro_interval_minutes"] * 60
+
         while self._running:
             time.sleep(1)
             if not self._running or not self._pomodoro_enabled:
                 continue
 
-            # ── 工作阶段：每 60 秒刷新壁纸以更新倒计时 ──
-            interval = self.config["pomodoro_interval_minutes"] * 60
-            for _ in range(interval):
-                if not self._running or not self._pomodoro_enabled:
-                    break
+            # ── 工作阶段：每秒检查，每 60 秒刷新壁纸更新倒计时 ──
+            last_render = time.time()
+            while self._running and self._pomodoro_enabled:
                 time.sleep(1)
-                if _ % 60 == 59:
+                now = time.time()
+                # 每 60 秒渲染一次
+                if now - last_render >= 60:
                     try:
                         self.render()
                     except Exception as e:
                         print(f"[番茄钟] 渲染失败: {e}")
+                    last_render = now
+                # 检查是否到达休息时间
+                if time.time() - self._pomodoro_last_break >= self._work_duration:
+                    break
             else:
-                # ── 触发休息 ──
-                break_mins = self.config["pomodoro_break_minutes"]
-                elapsed = time.time() - self._pomodoro_last_break
-                print(f"[番茄钟] 已工作 {int(elapsed // 60)} 分钟，提醒你休息！")
+                continue  # 被禁用或退出，回到外层 while
 
-                # 1. 弹出选择窗口：休息 / 再工作5分钟 / 跳过
-                choice = self._show_break_choice(break_mins)
+            # ── 触发休息 ──
+            break_mins = self.config["pomodoro_break_minutes"]
+            elapsed = time.time() - self._pomodoro_last_break
+            print(f"[番茄钟] 已工作 {int(elapsed // 60)} 分钟，提醒你休息！")
+
+            # 1. 弹出选择窗口：休息 / 再工作5分钟 / 跳过
+            choice = self._show_break_choice(break_mins)
+            if not self._running:
+                break
+
+            if choice == "rest":
+                # 2. 显示全屏休息倒计时（可跳过）
+                skipped = self._show_break_overlay(break_mins)
                 if not self._running:
                     break
+                if skipped:
+                    print("[番茄钟] 用户跳过了休息")
+                else:
+                    print("[番茄钟] 休息结束")
+                # 重置计时器，恢复正常工作时长
+                self._pomodoro_last_break = time.time()
+                self._work_duration = self.config["pomodoro_interval_minutes"] * 60
 
-                if choice == "rest":
-                    # 2. 显示全屏休息倒计时（可跳过）
-                    skipped = self._show_break_overlay(break_mins)
-                    if not self._running:
-                        break
-                    if skipped:
-                        print("[番茄钟] 用户跳过了休息")
-                    else:
-                        print("[番茄钟] 休息结束")
-                    # 重置计时器，开始下一个工作周期
-                    self._pomodoro_last_break = time.time()
+            elif choice == "snooze":
+                # 再工作5分钟：设置5分钟后再次触发
+                self._pomodoro_last_break = time.time()
+                self._work_duration = 5 * 60
+                print("[番茄钟] 用户选择再工作5分钟")
 
-                elif choice == "snooze":
-                    # 再工作5分钟：设置 last_break 让计时器在5分钟后再次触发
-                    self._pomodoro_last_break = time.time() - (interval - 5 * 60)
-                    print("[番茄钟] 用户选择再工作5分钟")
+            else:  # skip
+                # 跳过休息，重置计时器，恢复正常工作时长
+                self._pomodoro_last_break = time.time()
+                self._work_duration = self.config["pomodoro_interval_minutes"] * 60
+                print("[番茄钟] 用户跳过休息")
 
-                else:  # skip
-                    # 跳过休息，重置计时器
-                    self._pomodoro_last_break = time.time()
-                    print("[番茄钟] 用户跳过休息")
-
-                # 刷新壁纸，清除"休息中"状态
-                try:
-                    self.render()
-                except Exception as e:
-                    print(f"[番茄钟] 渲染失败: {e}")
+            # 刷新壁纸，清除"休息中"状态
+            try:
+                self.render()
+            except Exception as e:
+                print(f"[番茄钟] 渲染失败: {e}")
 
         print("[番茄钟] 后台线程已退出")
 
