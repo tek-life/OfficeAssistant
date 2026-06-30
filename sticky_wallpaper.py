@@ -737,10 +737,19 @@ class StickyWallpaper:
         """
         弹出选择窗口：休息一下 / 再工作5分钟 / 跳过。
         返回 "rest" / "snooze" / "skip"。
+        5秒内无操作自动返回 "rest"。
         """
         result = ["skip"]  # 默认跳过（窗口意外关闭时）
+        after_id = [None]  # 保存 after 回调 ID，用于取消
 
         def make_choice(choice):
+            # 取消 pending 的倒计时回调
+            if after_id[0] is not None:
+                try:
+                    dialog.after_cancel(after_id[0])
+                except Exception:
+                    pass
+                after_id[0] = None
             result[0] = choice
             root.destroy()
 
@@ -755,7 +764,7 @@ class StickyWallpaper:
         dialog.resizable(False, False)
 
         # 居中
-        dw, dh = 480, 220
+        dw, dh = 480, 250
         sx = (dialog.winfo_screenwidth() - dw) // 2
         sy = (dialog.winfo_screenheight() - dh) // 2
         dialog.geometry(f"{dw}x{dh}+{sx}+{sy}")
@@ -774,7 +783,30 @@ class StickyWallpaper:
             text="你想怎么做？",
             font=("Microsoft YaHei UI", 11),
             bg="#f5f5f5", fg="#888888",
-        ).pack(pady=(0, 20))
+        ).pack(pady=(0, 8))
+
+        # 倒计时提示标签
+        countdown_seconds = [5]
+        countdown_label = tk.Label(
+            dialog,
+            text=f"{countdown_seconds[0]}秒后自动开始休息...",
+            font=("Microsoft YaHei UI", 10),
+            bg="#f5f5f5", fg="#E65100",
+        )
+        countdown_label.pack(pady=(0, 12))
+
+        # 倒计时逻辑
+        def countdown_tick():
+            countdown_seconds[0] -= 1
+            if countdown_seconds[0] <= 0:
+                # 超时，自动选择休息
+                make_choice("rest")
+            else:
+                countdown_label.config(text=f"{countdown_seconds[0]}秒后自动开始休息...")
+                after_id[0] = dialog.after(1000, countdown_tick)
+
+        # 启动倒计时
+        after_id[0] = dialog.after(1000, countdown_tick)
 
         # 按钮行
         btn_frame = tk.Frame(dialog, bg="#f5f5f5")

@@ -89,6 +89,80 @@ Uses Windows Named Mutex (`Global\StickyWallpaper_SingleInstance`) + Named Event
 
 Parsing stops at the next `#` heading after `# TODO`.
 
+## Pomodoro Timer Architecture
+
+### Key Constraints
+
+- **pystray daemon thread**: `run_detached()` runs the tray icon in a separate thread. Menu callbacks must NOT call CPU-intensive operations (like `render()`) directly in the icon thread — spawn a daemon thread instead.
+- **Config persistence**: All state changes (e.g. toggling `pomodoro_enabled`) must call `_save_config()` immediately. Users expect config.json to be "visible and editable" — never rely on in-memory defaults alone.
+- **Build prerequisite**: Must `Stop-Process -Name StickyWallpaper` before rebuilding exe, otherwise PyInstaller fails with `PermissionError`.
+- **PowerShell stderr false-positive**: PyInstaller stderr output is misreported as exit code 1 in PowerShell — safe to ignore.
+
+### Render Scheduling (Critical)
+
+`_pomodoro_loop` **exclusively** owns render calls during work phases to avoid race conditions:
+
+```
+_refresh_loop:  sleeps config["refresh_minutes"] * 60, calls render()
+_pomodoro_loop: sleeps 1s per tick, calls render() every 60s during work phase
+```
+
+**Rule**: When Pomodoro is active, `_refresh_loop` does NOT adjust its interval — it continues at the configured rate. `_pomodoro_loop` handles the per-minute countdown refresh independently. This avoids duplicate renders and race conditions between the two loops.
+
+### Work/Break Flow
+
+```
+_pomodoro_loop:
+  while running:
+    work phase (while elapsed < _work_duration):
+      sleep 1s, render() every 60s with countdown text
+    → _show_break_choice() → returns "rest" / "snooze" / "skip"
+      rest   → _show_break_overlay() fullscreen countdown → reset _work_duration to config interval
+      snooze → _work_duration = 300 (5 min), _pomodoro_last_break = now → re-enter work phase
+      skip   → reset _work_duration to config interval → re-enter work phase
+```
+
+### Key Instance Variables
+
+| Variable | Purpose |
+|----------|--------|
+| `_work_duration` | Current work phase length in seconds. Default = `interval * 60`, set to `300` on snooze |
+| `_pomodoro_last_break` | Timestamp of last break/snooze start, used for countdown calculation |
+| `_pomodoro_enabled` | Read from config on startup, saved on toggle |
+
+### Fullscreen Break Overlay (`_show_break_overlay`)
+
+- **Implementation**: tkinter window with `-fullscreen`, `-topmost`, `overrideredirect(True)`, dark background (`#0d0d1a`)
+- **Exit methods**: "跳过休息" button or Esc key
+- **Timer update**: `root.after(1000, update_countdown)` for per-second refresh
+- **Thread safety**: Runs `mainloop()` in a daemon thread — works on Windows despite tkinter docs recommending main thread
+
+### Break Choice Dialog (`_show_break_choice`)
+
+- tkinter popup with 3 buttons: 休息一下 / 再工作5分钟 / 跳过
+- Returns string: `"rest"` / `"snooze"` / `"skip"`
+- Blocks the Pomodoro thread until user responds
+
+### Wallpaper Countdown Display
+
+Rendered inside the sticky note between date and divider line:
+- Work mode: `⏱ MM:SS 距下次休息`
+- Break mode: `⏸ 休息中 MM:SS`
+
+Uses `accent_rgb + (220,)` color. Header height dynamically increases +24px when countdown text is present.
+
+### Rejected Approaches (Do NOT Re-implement)
+
+| Approach | Why Rejected |
+|----------|-------------|
+| PowerShell Toast notifications | HTML entity encoding for Chinese is fragile; users may disable notifications |
+| `win10toast` / `winotify` libraries | Adds external dependency, violates minimal-deps constraint |
+| Monitor power-off (`SendMessageW SC_MONITORPOWER`) | Too aggressive; user prefers visual overlay they can dismiss |
+| `MessageBoxW` with auto-close (EnumWindows + timer) | Complex ctypes callback logic, tuple unpacking bugs, unreliable |
+| `for _ in range(interval)` loop for timing | Cannot handle snooze correctly — loop counts from start regardless of `_pomodoro_last_break`. Must use `while + time.time()` |
+| Both `_refresh_loop` and `_pomodoro_loop` calling render() | Race condition — duplicate renders. Only `_pomodoro_loop` should render during work phase |
+| Hardcoded 12-item TODO limit | Users need unlimited items; note height is already dynamic |
+
 ## Key Technical Decisions
 
 - **Windows-only**: Heavy use of `ctypes.windll`, `winreg`, Windows font paths. No cross-platform support.
