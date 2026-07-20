@@ -699,6 +699,62 @@ class StickyWallpaper:
         )
         status_label.pack(side="right")
 
+        # ── 格式工具栏 ──
+        toolbar = tk.Frame(root, bg="#f0f0f0", relief="flat")
+        toolbar.pack(fill="x", padx=16, pady=(4, 0))
+
+        def _wrap_selection(before, after=None):
+            """用 markdown 标记包裹选中文本，无选中则在光标处插入。"""
+            if after is None:
+                after = before
+            try:
+                sel = text_area.get("sel.first", "sel.last")
+                text_area.delete("sel.first", "sel.last")
+                text_area.insert("insert", f"{before}{sel}{after}")
+                # 选中刚插入的内容（方便连续操作）
+                end = text_area.index("insert")
+                start = f"{end}-{len(before) + len(sel) + len(after)}c"
+                text_area.tag_add("sel", start, end)
+            except tk.TclError:
+                text_area.insert("insert", f"{before}{after}")
+            text_area.focus_set()
+            on_text_change()
+
+        def _insert_line_prefix(prefix):
+            """在当前行首插入前缀（标题、列表、引用）。"""
+            try:
+                line_start = text_area.index("insert linestart")
+                text_area.insert(line_start, prefix)
+            except tk.TclError:
+                pass
+            text_area.focus_set()
+            on_text_change()
+
+        btn_cfg = {"font": ("Microsoft YaHei UI", 9), "relief": "flat",
+                   "bg": "#f0f0f0", "padx": 6, "pady": 2}
+
+        tk.Button(toolbar, text="B", command=lambda: _wrap_selection("**"),
+                  **{**btn_cfg, "font": ("Microsoft YaHei UI", 10, "bold")}).pack(side="left", padx=1)
+        tk.Button(toolbar, text="I", command=lambda: _wrap_selection("*"),
+                  **{**btn_cfg, "font": ("Microsoft YaHei UI", 10, "italic")}).pack(side="left", padx=1)
+        tk.Button(toolbar, text="H1", command=lambda: _insert_line_prefix("# "),
+                  **btn_cfg).pack(side="left", padx=(8, 1))
+        tk.Button(toolbar, text="H2", command=lambda: _insert_line_prefix("## "),
+                  **btn_cfg).pack(side="left", padx=1)
+        tk.Button(toolbar, text="H3", command=lambda: _insert_line_prefix("### "),
+                  **btn_cfg).pack(side="left", padx=1)
+        tk.Button(toolbar, text="代码", command=lambda: _wrap_selection("`"),
+                  **btn_cfg).pack(side="left", padx=(8, 1))
+        tk.Button(toolbar, text="• 列表", command=lambda: _insert_line_prefix("- "),
+                  **btn_cfg).pack(side="left", padx=1)
+        tk.Button(toolbar, text="1. 列表", command=lambda: _insert_line_prefix("1. "),
+                  **btn_cfg).pack(side="left", padx=1)
+        tk.Button(toolbar, text="链接",
+                  command=lambda: _wrap_selection("[", "](url)"),
+                  **btn_cfg).pack(side="left", padx=(8, 1))
+        tk.Button(toolbar, text="引用", command=lambda: _insert_line_prefix("> "),
+                  **btn_cfg).pack(side="left", padx=1)
+
         # ── 编辑区 ──
         edit_frame = tk.Frame(root, bg="#fafafa")
         edit_frame.pack(fill="both", expand=True, padx=16, pady=(4, 4))
@@ -920,9 +976,11 @@ class StickyWallpaper:
         )
         toggle_btn.pack(side="right")
 
-        # Ctrl+S 保存, Ctrl+P 切换预览
+        # Ctrl+S 保存, Ctrl+P 切换预览, Ctrl+B 粗体, Ctrl+I 斜体
         root.bind("<Control-s>", lambda e: save())
         root.bind("<Control-p>", lambda e: toggle_preview())
+        root.bind("<Control-b>", lambda e: _wrap_selection("**"))
+        root.bind("<Control-i>", lambda e: _wrap_selection("*"))
         root.protocol("WM_DELETE_WINDOW", save_and_close)
         root.mainloop()
 
