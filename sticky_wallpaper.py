@@ -705,10 +705,23 @@ class StickyWallpaper:
                 if not himc:
                     return
 
+                # 按 DPI 把字号（磅）换算成实际像素高度，
+                # 避免高 DPI 缩放下组词字体偏小
+                try:
+                    dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+                except Exception:
+                    dpi = 0
+                if not dpi:
+                    hdc = ctypes.windll.user32.GetDC(hwnd)
+                    dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSY
+                    ctypes.windll.user32.ReleaseDC(hwnd, hdc)
+                pixel_height = max(16, int(font_size * dpi / 72))
+
                 lf = LOGFONTW()
-                lf.lfHeight = -font_size      # 负值 = 像素字号
+                lf.lfHeight = -pixel_height   # 负值 = 像素字号
                 lf.lfWeight = 400             # FW_NORMAL
                 lf.lfCharSet = 134            # GB2312_CHARSET（简体中文）
+                lf.lfQuality = 5              # CLEARTYPE_QUALITY
                 lf.lfFaceName = font_name
 
                 imm32.ImmSetCompositionFont(himc, ctypes.byref(lf))
@@ -823,7 +836,8 @@ class StickyWallpaper:
         text_area.insert("1.0", note.get("content", ""))
 
         # 修复输入法组词窗口字体（Windows IME 默认不继承组件字体）
-        self._set_ime_font(text_area, "Microsoft YaHei UI", 16)
+        # 传编辑器字号（磅），内部按 DPI 换算成像素
+        self._set_ime_font(text_area, "Microsoft YaHei UI", 12)
 
         # ── 预览区（初始隐藏）──
         preview_frame = tk.Frame(root, bg="#fafafa")
