@@ -668,6 +668,59 @@ class StickyWallpaper:
         else:
             print("未找到备份壁纸，无法还原。")
 
+    # --- 输入法字体修复 ---
+    def _set_ime_font(self, text_widget, font_name: str, font_size: int):
+        """
+        设置输入法（IME）组词窗口字体。
+
+        Windows 上 tkinter 的 IME 组词/候选窗口不会继承 Text 组件的字体，
+        导致拼音输入时组词文字过小。通过 IMM32 API 显式设置组词字体。
+        绑定 FocusIn 事件，确保每次获得焦点时都应用正确的字体。
+        """
+        import ctypes
+
+        class LOGFONTW(ctypes.Structure):
+            _fields_ = [
+                ("lfHeight", ctypes.c_long),
+                ("lfWidth", ctypes.c_long),
+                ("lfEscapement", ctypes.c_long),
+                ("lfOrientation", ctypes.c_long),
+                ("lfWeight", ctypes.c_long),
+                ("lfItalic", ctypes.c_byte),
+                ("lfUnderline", ctypes.c_byte),
+                ("lfStrikeOut", ctypes.c_byte),
+                ("lfCharSet", ctypes.c_byte),
+                ("lfOutPrecision", ctypes.c_byte),
+                ("lfClipPrecision", ctypes.c_byte),
+                ("lfQuality", ctypes.c_byte),
+                ("lfPitchAndFamily", ctypes.c_byte),
+                ("lfFaceName", ctypes.c_wchar * 32),
+            ]
+
+        def _apply(event=None):
+            try:
+                hwnd = text_widget.winfo_id()
+                imm32 = ctypes.windll.imm32
+                himc = imm32.ImmGetContext(hwnd)
+                if not himc:
+                    return
+
+                lf = LOGFONTW()
+                lf.lfHeight = -font_size      # 负值 = 像素字号
+                lf.lfWeight = 400             # FW_NORMAL
+                lf.lfCharSet = 134            # GB2312_CHARSET（简体中文）
+                lf.lfFaceName = font_name
+
+                imm32.ImmSetCompositionFont(himc, ctypes.byref(lf))
+                imm32.ImmReleaseContext(hwnd, himc)
+            except Exception as e:
+                print(f"[IME] 设置输入法字体失败: {e}")
+
+        # 获得焦点时应用（此时 IME 上下文才可用）
+        text_widget.bind("<FocusIn>", _apply, add="+")
+        # 窗口显示后先尝试一次
+        text_widget.after(100, _apply)
+
     # --- 工作日志窗口（Markdown 编辑 + 预览）---
     def _show_diary(self):
         """打开工作日志编辑窗口，支持 Markdown 语法高亮和预览。"""
@@ -759,13 +812,18 @@ class StickyWallpaper:
         edit_frame = tk.Frame(root, bg="#fafafa")
         edit_frame.pack(fill="both", expand=True, padx=16, pady=(4, 4))
 
+        # 用中文等宽字体，避免 IME 组词窗口字体过小
+        editor_font = ("Microsoft YaHei UI", 12)
         text_area = scrolledtext.ScrolledText(
-            edit_frame, font=("Consolas", 12), wrap="word",
+            edit_frame, font=editor_font, wrap="word",
             bg="#ffffff", fg="#333", insertbackground="#333",
             relief="flat", padx=12, pady=8, undo=True,
         )
         text_area.pack(fill="both", expand=True)
         text_area.insert("1.0", note.get("content", ""))
+
+        # 修复输入法组词窗口字体（Windows IME 默认不继承组件字体）
+        self._set_ime_font(text_area, "Microsoft YaHei UI", 16)
 
         # ── 预览区（初始隐藏）──
         preview_frame = tk.Frame(root, bg="#fafafa")
