@@ -669,13 +669,14 @@ class StickyWallpaper:
             print("未找到备份壁纸，无法还原。")
 
     # --- 输入法字体修复 ---
-    def _set_ime_font(self, text_widget, font_name: str, font_size: int):
+    def _set_ime_font(self, text_widget, font_name: str):
         """
         设置输入法（IME）组词窗口字体。
 
         Windows 上 tkinter 的 IME 组词/候选窗口不会继承 Text 组件的字体，
-        导致拼音输入时组词文字过小。通过 IMM32 API 显式设置组词字体。
-        绑定 FocusIn 事件，确保每次获得焦点时都应用正确的字体。
+        导致拼音输入时组词文字过小。通过 IMM32 API 显式设置组词字体，
+        字号直接取组件字体的真实像素高度，保证与正文等大。
+        绑定 FocusIn / KeyPress 事件，确保字体持续生效。
         """
         import ctypes
 
@@ -705,17 +706,12 @@ class StickyWallpaper:
                 if not himc:
                     return
 
-                # 按 DPI 把字号（磅）换算成实际像素高度，
-                # 避免高 DPI 缩放下组词字体偏小
-                try:
-                    dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
-                except Exception:
-                    dpi = 0
-                if not dpi:
-                    hdc = ctypes.windll.user32.GetDC(hwnd)
-                    dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSY
-                    ctypes.windll.user32.ReleaseDC(hwnd, hdc)
-                pixel_height = max(16, int(font_size * dpi / 72))
+                # 直接读取组件字体在屏幕上的真实行高，
+                # 再放大到 1.5 倍，确保拼音组词串清晰够大
+                import tkinter.font as tkfont
+                widget_font = tkfont.Font(font=text_widget.cget("font"))
+                linespace = widget_font.metrics("linespace")
+                pixel_height = max(20, int(linespace * 1.5))
 
                 lf = LOGFONTW()
                 lf.lfHeight = -pixel_height   # 负值 = 像素字号
@@ -733,6 +729,16 @@ class StickyWallpaper:
         text_widget.bind("<FocusIn>", _apply, add="+")
         # 窗口显示后先尝试一次
         text_widget.after(100, _apply)
+
+        # 部分输入法会在组词过程中重置字体，按键时节流式重新应用
+        _ime_timer = [None]
+
+        def _reapply_throttled(event=None):
+            if _ime_timer[0]:
+                text_widget.after_cancel(_ime_timer[0])
+            _ime_timer[0] = text_widget.after(50, _apply)
+
+        text_widget.bind("<KeyPress>", _reapply_throttled, add="+")
 
     # --- 工作日志窗口（Markdown 编辑 + 预览）---
     def _show_diary(self):
@@ -765,9 +771,16 @@ class StickyWallpaper:
         )
         status_label.pack(side="right")
 
+        # ── 内容容器（编辑区与预览区都放在这里）──
+        content = tk.Frame(root, bg="#fafafa")
+        content.pack(fill="both", expand=True, padx=16, pady=(4, 4))
+
+        # ── 编辑区（含工具栏与文本框，默认隐藏）──
+        edit_frame = tk.Frame(content, bg="#fafafa")
+
         # ── 格式工具栏 ──
-        toolbar = tk.Frame(root, bg="#f0f0f0", relief="flat")
-        toolbar.pack(fill="x", padx=16, pady=(4, 0))
+        toolbar = tk.Frame(edit_frame, bg="#f0f0f0", relief="flat")
+        toolbar.pack(fill="x", pady=(0, 4))
 
         def _wrap_selection(before, after=None):
             """用 markdown 标记包裹选中文本，无选中则在光标处插入。"""
@@ -821,10 +834,7 @@ class StickyWallpaper:
         tk.Button(toolbar, text="引用", command=lambda: _insert_line_prefix("> "),
                   **btn_cfg).pack(side="left", padx=1)
 
-        # ── 编辑区 ──
-        edit_frame = tk.Frame(root, bg="#fafafa")
-        edit_frame.pack(fill="both", expand=True, padx=16, pady=(4, 4))
-
+        # ── 编辑文本框 ──
         # 用中文等宽字体，避免 IME 组词窗口字体过小
         editor_font = ("Microsoft YaHei UI", 12)
         text_area = scrolledtext.ScrolledText(
@@ -836,11 +846,11 @@ class StickyWallpaper:
         text_area.insert("1.0", note.get("content", ""))
 
         # 修复输入法组词窗口字体（Windows IME 默认不继承组件字体）
-        # 传编辑器字号（磅），内部按 DPI 换算成像素
-        self._set_ime_font(text_area, "Microsoft YaHei UI", 12)
+        # 字号自动取编辑器字体的真实像素高度，与正文等大
+        self._set_ime_font(text_area, "Arial")
 
-        # ── 预览区（初始隐藏）──
-        preview_frame = tk.Frame(root, bg="#fafafa")
+        # ── 预览区 ──
+        preview_frame = tk.Frame(content, bg="#fafafa")
         preview_text = scrolledtext.ScrolledText(
             preview_frame, font=("Microsoft YaHei UI", 12), wrap="word",
             bg="#ffffff", fg="#333", relief="flat", padx=16, pady=12,
@@ -996,24 +1006,32 @@ class StickyWallpaper:
 
             preview_text.config(state="disabled")
 
-        # ── 编辑/预览切换 ──
-        mode = ["edit"]  # "edit" or "preview"
+        # ── 阅读 / 编辑 双模式 ──
+        mode = ["read"]  # "read" 或 "edit"
 
-        def toggle_preview():
-            if mode[0] == "edit":
-                render_preview()
-                edit_frame.pack_forget()
-                preview_frame.pack(fill="both", expand=True,
-                                   padx=16, pady=(4, 4))
-                toggle_btn.config(text="编辑")
-                mode[0] = "preview"
+        def enter_read_mode():
+            """切换到阅读模式：渲染 Markdown 预览。"""
+            render_preview()
+            edit_frame.pack_forget()
+            preview_frame.pack(fill="both", expand=True)
+            toggle_btn.config(text="编辑")
+            mode[0] = "read"
+
+        def enter_edit_mode():
+            """切换到编辑模式：显示工具栏与文本框。"""
+            preview_frame.pack_forget()
+            edit_frame.pack(fill="both", expand=True)
+            toggle_btn.config(text="保存并返回")
+            mode[0] = "edit"
+            apply_highlight()
+            text_area.focus_set()
+
+        def toggle_mode():
+            if mode[0] == "read":
+                enter_edit_mode()
             else:
-                preview_frame.pack_forget()
-                edit_frame.pack(fill="both", expand=True,
-                                padx=16, pady=(4, 4))
-                toggle_btn.config(text="预览")
-                mode[0] = "edit"
-                apply_highlight()
+                save()  # 编辑返回阅读前先保存
+                enter_read_mode()
 
         # ── 底部按钮 ──
         btn_frame = tk.Frame(root, bg="#fafafa")
@@ -1042,15 +1060,18 @@ class StickyWallpaper:
         ).pack(side="left", padx=(0, 8))
 
         toggle_btn = tk.Button(
-            btn_frame, text="预览", font=("Microsoft YaHei UI", 10),
-            bg="#757575", fg="white", padx=16, pady=4,
-            command=toggle_preview,
+            btn_frame, text="编辑", font=("Microsoft YaHei UI", 10),
+            bg="#1976D2", fg="white", padx=16, pady=4,
+            command=toggle_mode,
         )
         toggle_btn.pack(side="right")
 
-        # Ctrl+S 保存, Ctrl+P 切换预览, Ctrl+B 粗体, Ctrl+I 斜体
+        # 默认进入阅读模式（渲染 Markdown 预览）
+        enter_read_mode()
+
+        # Ctrl+S 保存, Ctrl+E 切换阅读/编辑, Ctrl+B 粗体, Ctrl+I 斜体
         root.bind("<Control-s>", lambda e: save())
-        root.bind("<Control-p>", lambda e: toggle_preview())
+        root.bind("<Control-e>", lambda e: toggle_mode())
         root.bind("<Control-b>", lambda e: _wrap_selection("**"))
         root.bind("<Control-i>", lambda e: _wrap_selection("*"))
         root.protocol("WM_DELETE_WINDOW", save_and_close)
