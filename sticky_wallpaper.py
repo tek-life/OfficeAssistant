@@ -4,20 +4,17 @@ StickyWallpaper — 把每日 TODO 以便利贴风格渲染到桌面壁纸上。
 
 用法:
   1. 安装依赖:  pip install Pillow pystray
-  2. 编辑 todos.txt（程序首次运行会自动生成示例）
-  3. 运行:      python sticky_wallpaper.py
+  2. 运行:      python sticky_wallpaper.py
+  3. 右键托盘图标 → 编辑待办 / 工作日志
 
-todos.txt 格式:
-  文件分为两个区域，以 "# TODO" 为分界：
+数据存储:
+  所有数据存储在 data/sticky_wallpaper.db（SQLite）中：
+  - todos 表:        待办事项
+  - daily_notes 表:  工作日志（每天一条，Markdown）
+  - app_settings 表: 应用设置
 
-  # 个人笔记（或任意标题）
-  这里的内容不会显示在桌面上，当作个人注释/备忘。
-
-  # TODO
-  - [ ] 未完成事项
-  - [x] 已完成事项
-  只有 "# TODO" 下方的条目才会渲染到桌面壁纸上。
-  遇到下一个 "#" 标题时停止读取。
+  首次启动会自动从旧的 todos.txt / config.json 迁移数据，
+  旧文件重命名为 .bak 保留备份。
 """
 
 import ctypes
@@ -29,13 +26,15 @@ import threading
 import subprocess
 import winreg
 import tkinter as tk
+import tkinter.scrolledtext as scrolledtext
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from db import Database
 
 
 # ═══════════════════════════════════════════════════════════
@@ -63,6 +62,8 @@ else:
     SCRIPT_DIR = Path(__file__).parent.resolve()
 TODOS_FILE = SCRIPT_DIR / "todos.txt"
 CONFIG_FILE = SCRIPT_DIR / "config.json"
+DB_DIR = SCRIPT_DIR / "data"
+DB_FILE = DB_DIR / "sticky_wallpaper.db"
 BACKUP_WALLPAPER = SCRIPT_DIR / ".original_wallpaper.jpg"
 RENDERED_WALLPAPER = SCRIPT_DIR / "rendered_wallpaper.bmp"
 
@@ -111,6 +112,11 @@ def make_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
 class TodoItem:
     text: str
     done: bool
+    id: int = 0
+    priority: int = 0
+    category: str = ""
+    tags: list = field(default_factory=list)
+    sort_order: int = 0
 
 
 def parse_todos(path: Path) -> tuple:
@@ -417,7 +423,14 @@ class StickyWallpaper:
         self._pomodoro_enabled = False
         self._pomodoro_last_break = time.time()
         self._acquire_singleton()
-        self.config = self._load_config()
+
+        # 数据库初始化 & 旧文件迁移
+        self.db = Database(DB_FILE)
+        self.db.migrate_from_files(TODOS_FILE, CONFIG_FILE)
+        self._init_default_settings()
+
+        # 从数据库加载配置
+        self.config = self._load_config_from_db()
         self._pomodoro_enabled = self.config.get("pomodoro_enabled", False)
         self._work_duration = self.config.get("pomodoro_interval_minutes", 60) * 60
         self.wm = WallpaperManager()
@@ -495,35 +508,47 @@ class StickyWallpaper:
             kernel32.CloseHandle(self._mutex_handle)
             self._mutex_handle = None
 
-    # --- 配置 ---
-    def _load_config(self) -> dict:
-        cfg = dict(self.DEFAULT_CONFIG)
-        if CONFIG_FILE.exists():
-            try:
-                cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
-            except Exception:
-                pass
-        else:
-            # 首次运行：生成默认 config.json
-            try:
-                CONFIG_FILE.write_text(
-                    json.dumps(cfg, indent=2, ensure_ascii=False),
-                    encoding="utf-8",
-                )
-                print(f"[配置] 已生成默认配置文件: {CONFIG_FILE}")
-            except Exception as e:
-                print(f"[配置] 生成配置文件失败: {e}")
+    # --- 配置（SQLite app_settings 表）---
+    def _init_default_settings(self):
+        """确保默认设置项存在（仅插入缺失的键）。"""
+        defaults = {
+            "refresh_minutes": "5",
+            "note_position": "top_right",
+            "margin": "60",
+            "pomodoro_enabled": "false",
+            "pomodoro_interval_minutes": "60",
+            "pomodoro_break_minutes": "5",
+        }
+        for k, v in defaults.items():
+            self.db.conn.execute(
+                "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
+                (k, v),
+            )
+        self.db.conn.commit()
+
+    def _load_config_from_db(self) -> dict:
+        """从 app_settings 表加载配置，转换为正确类型。"""
+        raw = self.db.get_all_settings()
+        cfg = {}
+        int_keys = {"refresh_minutes", "margin",
+                    "pomodoro_interval_minutes", "pomodoro_break_minutes"}
+        bool_keys = {"pomodoro_enabled"}
+        for k, v in raw.items():
+            if k in int_keys:
+                cfg[k] = int(v)
+            elif k in bool_keys:
+                cfg[k] = v.lower() in ("true", "1", "yes")
+            else:
+                cfg[k] = v
+        # 补全缺失的默认值
+        for k, v in self.DEFAULT_CONFIG.items():
+            cfg.setdefault(k, v)
         return cfg
 
     def _save_config(self):
-        """将当前配置保存到 config.json。"""
-        try:
-            CONFIG_FILE.write_text(
-                json.dumps(self.config, indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            print(f"[配置] 保存配置文件失败: {e}")
+        """将当前配置写回 app_settings 表。"""
+        for k, v in self.config.items():
+            self.db.set_setting(k, v)
 
     # --- 壁纸备份（复制原始壁纸文件，而非只存路径）---
     def _save_backup(self, source_path: str):
@@ -535,31 +560,24 @@ class StickyWallpaper:
         except Exception as e:
             print(f"[备份] 保存失败: {e}")
 
-    # --- 示例 todos ---
-    def _ensure_todos_file(self):
-        if not TODOS_FILE.exists():
-            sample = (
-                "# 个人笔记\n"
-                "这里写的内容不会显示在桌面上。\n"
-                "可以用来记录想法、灵感、备忘等。\n"
-                "\n"
-                "# TODO\n"
-                "- [ ] 完成项目报告\n"
-                "- [ ] 回复邮件\n"
-                "- [x] 更新工作日志\n"
-                "- [ ] 准备明天会议\n"
-                "- [ ] 阅读技术文章\n"
-            )
-            TODOS_FILE.write_text(sample, encoding="utf-8")
-
     # --- 核心：渲染壁纸 ---
     def render(self):
         with self._render_lock:
             self._do_render()
 
     def _do_render(self):
-        self._ensure_todos_file()
-        title, items = parse_todos(TODOS_FILE)
+        # 从数据库读取待办
+        rows = self.db.get_todos()
+        items = [
+            TodoItem(
+                text=r["text"], done=bool(r["done"]), id=r["id"],
+                priority=r["priority"], category=r["category"],
+                tags=json.loads(r["tags"]) if r["tags"] else [],
+                sort_order=r["sort_order"],
+            )
+            for r in rows
+        ]
+        title = "今日待办"
 
         sw, sh = self.wm.get_screen_size()
         current_wp = self.wm.get_current() or ""
@@ -650,16 +668,161 @@ class StickyWallpaper:
         else:
             print("未找到备份壁纸，无法还原。")
 
-    # --- 编辑 todos ---
-    def edit_todos(self):
-        self._ensure_todos_file()
-        for editor in ("notepad.exe", "code"):
-            try:
-                subprocess.Popen([editor, str(TODOS_FILE)])
+    # --- 工作日志窗口 ---
+    def _show_diary(self):
+        """打开工作日志编辑窗口（tkinter）。"""
+        today = datetime.now().strftime("%Y-%m-%d")
+        note = self.db.get_daily_note(today)
+
+        root = tk.Tk()
+        root.title(f"工作日志 — {today}")
+        root.configure(bg="#fafafa")
+        root.attributes("-topmost", True)
+
+        dw, dh = 700, 520
+        sx = (root.winfo_screenwidth() - dw) // 2
+        sy = (root.winfo_screenheight() - dh) // 2
+        root.geometry(f"{dw}x{dh}+{sx}+{sy}")
+
+        # 标题栏
+        header = tk.Frame(root, bg="#fafafa")
+        header.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(
+            header, text=f"工作日志  {today}",
+            font=("Microsoft YaHei UI", 14, "bold"),
+            bg="#fafafa", fg="#333",
+        ).pack(side="left")
+
+        status_label = tk.Label(
+            header, text="", font=("Microsoft YaHei UI", 9),
+            bg="#fafafa", fg="#999",
+        )
+        status_label.pack(side="right")
+
+        # 编辑区（支持 Markdown 纯文本）
+        text_area = scrolledtext.ScrolledText(
+            root, font=("Consolas", 12), wrap="word",
+            bg="#ffffff", fg="#333", insertbackground="#333",
+            relief="flat", padx=12, pady=8,
+        )
+        text_area.pack(fill="both", expand=True, padx=16, pady=(4, 8))
+        text_area.insert("1.0", note.get("content", ""))
+
+        # 底部按钮
+        btn_frame = tk.Frame(root, bg="#fafafa")
+        btn_frame.pack(fill="x", padx=16, pady=(0, 12))
+
+        def save():
+            content = text_area.get("1.0", "end-1c")
+            self.db.save_daily_note(today, content)
+            status_label.config(text="已保存 ✓")
+            root.after(2000, lambda: status_label.config(text=""))
+
+        def save_and_close():
+            save()
+            root.destroy()
+
+        tk.Button(
+            btn_frame, text="保存", font=("Microsoft YaHei UI", 10),
+            bg="#4CAF50", fg="white", padx=16, pady=4,
+            command=save,
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_frame, text="保存并关闭", font=("Microsoft YaHei UI", 10),
+            bg="#1976D2", fg="white", padx=16, pady=4,
+            command=save_and_close,
+        ).pack(side="left")
+
+        # Ctrl+S 保存
+        root.bind("<Control-s>", lambda e: save())
+        root.protocol("WM_DELETE_WINDOW", save_and_close)
+        root.mainloop()
+
+    # --- 待办编辑窗口 ---
+    def _show_todo_editor(self):
+        """打开待办事项编辑窗口（tkinter）。"""
+        root = tk.Tk()
+        root.title("编辑待办")
+        root.configure(bg="#fafafa")
+        root.attributes("-topmost", True)
+
+        dw, dh = 560, 480
+        sx = (root.winfo_screenwidth() - dw) // 2
+        sy = (root.winfo_screenheight() - dh) // 2
+        root.geometry(f"{dw}x{dh}+{sx}+{sy}")
+
+        # 列表框
+        listbox = tk.Listbox(
+            root, font=("Microsoft YaHei UI", 11),
+            selectmode="single", activestyle="none",
+        )
+        listbox.pack(fill="both", expand=True, padx=16, pady=(12, 4))
+
+        def refresh_list():
+            listbox.delete(0, "end")
+            for r in self.db.get_todos():
+                mark = "☑" if r["done"] else "☐"
+                pri = {1: " ⚑", 2: " ⚑⚑"}.get(r["priority"], "")
+                listbox.insert("end", f" {mark} {r['text']}{pri}")
+
+        refresh_list()
+
+        # 操作按钮行
+        op_frame = tk.Frame(root, bg="#fafafa")
+        op_frame.pack(fill="x", padx=16, pady=4)
+
+        def toggle_selected():
+            sel = listbox.curselection()
+            if not sel:
                 return
-            except FileNotFoundError:
-                continue
-        os.startfile(str(TODOS_FILE))
+            rows = self.db.get_todos()
+            if sel[0] < len(rows):
+                self.db.toggle_todo(rows[sel[0]]["id"])
+                refresh_list()
+                threading.Thread(target=self.render, daemon=True).start()
+
+        def delete_selected():
+            sel = listbox.curselection()
+            if not sel:
+                return
+            rows = self.db.get_todos()
+            if sel[0] < len(rows):
+                self.db.delete_todo(rows[sel[0]]["id"])
+                refresh_list()
+                threading.Thread(target=self.render, daemon=True).start()
+
+        tk.Button(
+            op_frame, text="切换完成", font=("Microsoft YaHei UI", 9),
+            command=toggle_selected,
+        ).pack(side="left", padx=(0, 4))
+        tk.Button(
+            op_frame, text="删除", font=("Microsoft YaHei UI", 9),
+            command=delete_selected,
+        ).pack(side="left")
+
+        # 添加新待办
+        add_frame = tk.Frame(root, bg="#fafafa")
+        add_frame.pack(fill="x", padx=16, pady=(4, 12))
+
+        entry = tk.Entry(add_frame, font=("Microsoft YaHei UI", 11))
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        def add_todo():
+            text = entry.get().strip()
+            if text:
+                self.db.add_todo(text)
+                entry.delete(0, "end")
+                refresh_list()
+                threading.Thread(target=self.render, daemon=True).start()
+
+        entry.bind("<Return>", lambda e: add_todo())
+        tk.Button(
+            add_frame, text="添加", font=("Microsoft YaHei UI", 9),
+            command=add_todo,
+        ).pack(side="left")
+
+        root.mainloop()
 
     # --- 番茄钟（休息提醒：定时提醒休息）---
     def _pomodoro_loop(self):
@@ -948,7 +1111,10 @@ class StickyWallpaper:
         threading.Thread(target=self.render, daemon=True).start()
 
     def _tray_edit(self):
-        threading.Thread(target=self.edit_todos, daemon=True).start()
+        threading.Thread(target=self._show_todo_editor, daemon=True).start()
+
+    def _tray_diary(self):
+        threading.Thread(target=self._show_diary, daemon=True).start()
 
     def _tray_restore(self):
         threading.Thread(target=self.restore, daemon=True).start()
@@ -960,6 +1126,11 @@ class StickyWallpaper:
             icon.stop()
         self.restore()
         self._release_singleton()
+        # 关闭数据库
+        try:
+            self.db.close()
+        except Exception:
+            pass
         # 清理临时文件
         try:
             RENDERED_WALLPAPER.unlink(missing_ok=True)
@@ -971,7 +1142,8 @@ class StickyWallpaper:
 
         menu = pystray.Menu(
             pystray.MenuItem("刷新壁纸", self._tray_refresh, default=True),
-            pystray.MenuItem("编辑 todos.txt", self._tray_edit),
+            pystray.MenuItem("编辑待办", self._tray_edit),
+            pystray.MenuItem("工作日志", self._tray_diary),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("番茄钟休息提醒", self._toggle_pomodoro,
                              checked=lambda item: self._pomodoro_enabled),
