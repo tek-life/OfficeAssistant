@@ -668,9 +668,9 @@ class StickyWallpaper:
         else:
             print("未找到备份壁纸，无法还原。")
 
-    # --- 工作日志窗口 ---
+    # --- 工作日志窗口（Markdown 编辑 + 预览）---
     def _show_diary(self):
-        """打开工作日志编辑窗口（tkinter）。"""
+        """打开工作日志编辑窗口，支持 Markdown 语法高亮和预览。"""
         today = datetime.now().strftime("%Y-%m-%d")
         note = self.db.get_daily_note(today)
 
@@ -679,12 +679,12 @@ class StickyWallpaper:
         root.configure(bg="#fafafa")
         root.attributes("-topmost", True)
 
-        dw, dh = 700, 520
+        dw, dh = 750, 560
         sx = (root.winfo_screenwidth() - dw) // 2
         sy = (root.winfo_screenheight() - dh) // 2
         root.geometry(f"{dw}x{dh}+{sx}+{sy}")
 
-        # 标题栏
+        # ── 标题栏 ──
         header = tk.Frame(root, bg="#fafafa")
         header.pack(fill="x", padx=16, pady=(12, 4))
         tk.Label(
@@ -699,16 +699,195 @@ class StickyWallpaper:
         )
         status_label.pack(side="right")
 
-        # 编辑区（支持 Markdown 纯文本）
+        # ── 编辑区 ──
+        edit_frame = tk.Frame(root, bg="#fafafa")
+        edit_frame.pack(fill="both", expand=True, padx=16, pady=(4, 4))
+
         text_area = scrolledtext.ScrolledText(
-            root, font=("Consolas", 12), wrap="word",
+            edit_frame, font=("Consolas", 12), wrap="word",
             bg="#ffffff", fg="#333", insertbackground="#333",
-            relief="flat", padx=12, pady=8,
+            relief="flat", padx=12, pady=8, undo=True,
         )
-        text_area.pack(fill="both", expand=True, padx=16, pady=(4, 8))
+        text_area.pack(fill="both", expand=True)
         text_area.insert("1.0", note.get("content", ""))
 
-        # 底部按钮
+        # ── 预览区（初始隐藏）──
+        preview_frame = tk.Frame(root, bg="#fafafa")
+        preview_text = scrolledtext.ScrolledText(
+            preview_frame, font=("Microsoft YaHei UI", 12), wrap="word",
+            bg="#ffffff", fg="#333", relief="flat", padx=16, pady=12,
+            state="disabled",
+        )
+        preview_text.pack(fill="both", expand=True)
+
+        # 预览区 tag 样式
+        preview_text.tag_configure("h1", font=("Microsoft YaHei UI", 20, "bold"),
+                                   spacing3=6)
+        preview_text.tag_configure("h2", font=("Microsoft YaHei UI", 16, "bold"),
+                                   spacing3=4)
+        preview_text.tag_configure("h3", font=("Microsoft YaHei UI", 13, "bold"),
+                                   spacing3=3)
+        preview_text.tag_configure("bold", font=("Microsoft YaHei UI", 12, "bold"))
+        preview_text.tag_configure("italic", font=("Microsoft YaHei UI", 12, "italic"))
+        preview_text.tag_configure("code", font=("Consolas", 11),
+                                   background="#f0f0f0")
+        preview_text.tag_configure("bullet", lmargin1=20, lmargin2=34)
+        preview_text.tag_configure("link", foreground="#1565C0",
+                                   underline=True)
+        preview_text.tag_configure("hr", justify="center")
+
+        # ── Markdown 语法高亮（编辑区）──
+        def apply_highlight():
+            text_area.tag_remove("md_h", "1.0", "end")
+            text_area.tag_remove("md_bold", "1.0", "end")
+            text_area.tag_remove("md_italic", "1.0", "end")
+            text_area.tag_remove("md_code", "1.0", "end")
+            text_area.tag_remove("md_list", "1.0", "end")
+            text_area.tag_remove("md_link", "1.0", "end")
+
+            text_area.tag_configure("md_h", foreground="#1565C0",
+                                    font=("Consolas", 12, "bold"))
+            text_area.tag_configure("md_bold", foreground="#C62828",
+                                    font=("Consolas", 12, "bold"))
+            text_area.tag_configure("md_italic", foreground="#6A1B9A",
+                                    font=("Consolas", 12, "italic"))
+            text_area.tag_configure("md_code", foreground="#2E7D32",
+                                    background="#E8F5E9")
+            text_area.tag_configure("md_list", foreground="#E65100")
+            text_area.tag_configure("md_link", foreground="#1565C0",
+                                    underline=True)
+
+            content = text_area.get("1.0", "end-1c")
+            for i, line in enumerate(content.split("\n"), 1):
+                # 标题
+                if line.startswith("#"):
+                    text_area.tag_add("md_h", f"{i}.0", f"{i}.end")
+                # 列表
+                stripped = line.lstrip()
+                if stripped.startswith(("- ", "* ", "+ ")) or \
+                   (len(stripped) > 2 and stripped[0].isdigit()
+                    and stripped[1] == "."):
+                    idx = line.index(stripped[0]) if stripped[0] in line else 0
+                    text_area.tag_add("md_list", f"{i}.{idx}",
+                                      f"{i}.{idx + 2}")
+
+            # 行内格式（逐行扫描）
+            import re
+            for i, line in enumerate(content.split("\n"), 1):
+                # 粗体 **text**
+                for m in re.finditer(r'\*\*(.+?)\*\*', line):
+                    text_area.tag_add("md_bold", f"{i}.{m.start()}",
+                                      f"{i}.{m.end()}")
+                # 斜体 *text*
+                for m in re.finditer(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)',
+                                     line):
+                    text_area.tag_add("md_italic", f"{i}.{m.start()}",
+                                      f"{i}.{m.end()}")
+                # 行内代码 `code`
+                for m in re.finditer(r'`([^`]+)`', line):
+                    text_area.tag_add("md_code", f"{i}.{m.start()}",
+                                      f"{i}.{m.end()}")
+                # 链接 [text](url)
+                for m in re.finditer(r'\[([^\]]+)\]\([^)]+\)', line):
+                    text_area.tag_add("md_link", f"{i}.{m.start()}",
+                                      f"{i}.{m.end()}")
+
+        # 首次高亮
+        apply_highlight()
+        # 输入时延迟高亮（避免卡顿）
+        _highlight_timer = [None]
+
+        def on_text_change(event=None):
+            if _highlight_timer[0]:
+                root.after_cancel(_highlight_timer[0])
+            _highlight_timer[0] = root.after(300, apply_highlight)
+
+        text_area.bind("<KeyRelease>", on_text_change)
+
+        # ── Markdown 预览渲染 ──
+        def render_preview():
+            import re
+            preview_text.config(state="normal")
+            preview_text.delete("1.0", "end")
+
+            content = text_area.get("1.0", "end-1c")
+            lines = content.split("\n")
+            in_code_block = False
+
+            for line in lines:
+                # 代码块 ```
+                if line.strip().startswith("```"):
+                    in_code_block = not in_code_block
+                    if in_code_block:
+                        preview_text.insert("end", "\n")
+                    continue
+
+                if in_code_block:
+                    preview_text.insert("end", line + "\n", "code")
+                    continue
+
+                # 标题
+                if line.startswith("### "):
+                    preview_text.insert("end", line[4:] + "\n", "h3")
+                elif line.startswith("## "):
+                    preview_text.insert("end", line[3:] + "\n", "h2")
+                elif line.startswith("# "):
+                    preview_text.insert("end", line[2:] + "\n", "h1")
+                # 分割线
+                elif line.strip() in ("---", "***", "___"):
+                    preview_text.insert("end", "─" * 40 + "\n", "hr")
+                # 列表
+                elif line.lstrip().startswith(("- ", "* ", "+ ")):
+                    indent = len(line) - len(line.lstrip())
+                    text = line.lstrip()[2:]
+                    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+                    text = re.sub(r'\*(.+?)\*', r'\1', text)
+                    text = re.sub(r'`([^`]+)`', r'\1', text)
+                    preview_text.insert("end", "  " * (indent // 2) +
+                                        "•  " + text + "\n", "bullet")
+                # 有序列表
+                elif re.match(r'^\s*\d+\.\s', line):
+                    m = re.match(r'^(\s*)\d+\.\s(.+)', line)
+                    if m:
+                        text = m.group(2)
+                        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+                        text = re.sub(r'\*(.+?)\*', r'\1', text)
+                        preview_text.insert("end", "  " + text + "\n",
+                                            "bullet")
+                # 空行
+                elif not line.strip():
+                    preview_text.insert("end", "\n")
+                # 普通段落（处理行内格式）
+                else:
+                    text = line
+                    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+                    text = re.sub(r'\*(.+?)\*', r'\1', text)
+                    text = re.sub(r'`([^`]+)`', r'\1', text)
+                    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+                    preview_text.insert("end", text + "\n")
+
+            preview_text.config(state="disabled")
+
+        # ── 编辑/预览切换 ──
+        mode = ["edit"]  # "edit" or "preview"
+
+        def toggle_preview():
+            if mode[0] == "edit":
+                render_preview()
+                edit_frame.pack_forget()
+                preview_frame.pack(fill="both", expand=True,
+                                   padx=16, pady=(4, 4))
+                toggle_btn.config(text="编辑")
+                mode[0] = "preview"
+            else:
+                preview_frame.pack_forget()
+                edit_frame.pack(fill="both", expand=True,
+                                padx=16, pady=(4, 4))
+                toggle_btn.config(text="预览")
+                mode[0] = "edit"
+                apply_highlight()
+
+        # ── 底部按钮 ──
         btn_frame = tk.Frame(root, bg="#fafafa")
         btn_frame.pack(fill="x", padx=16, pady=(0, 12))
 
@@ -732,10 +911,18 @@ class StickyWallpaper:
             btn_frame, text="保存并关闭", font=("Microsoft YaHei UI", 10),
             bg="#1976D2", fg="white", padx=16, pady=4,
             command=save_and_close,
-        ).pack(side="left")
+        ).pack(side="left", padx=(0, 8))
 
-        # Ctrl+S 保存
+        toggle_btn = tk.Button(
+            btn_frame, text="预览", font=("Microsoft YaHei UI", 10),
+            bg="#757575", fg="white", padx=16, pady=4,
+            command=toggle_preview,
+        )
+        toggle_btn.pack(side="right")
+
+        # Ctrl+S 保存, Ctrl+P 切换预览
         root.bind("<Control-s>", lambda e: save())
+        root.bind("<Control-p>", lambda e: toggle_preview())
         root.protocol("WM_DELETE_WINDOW", save_and_close)
         root.mainloop()
 
