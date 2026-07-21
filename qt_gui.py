@@ -221,6 +221,7 @@ class DiaryWindow(QWidget):
         self.preview.setFont(QFont(BASE_FONT, BASE_SIZE))
         self.preview.setStyleSheet(
             "QTextEdit{background:#fff;border:1px solid #e0e0e0;border-radius:6px;}")
+        self.preview.installEventFilter(self)  # 双击进入编辑模式
         self.stack.addWidget(self.preview)   # index 0 = 阅读
 
         self.editor = QPlainTextEdit()
@@ -358,6 +359,15 @@ class DiaryWindow(QWidget):
     def closeEvent(self, event):
         self._closed = True
         event.accept()
+
+    def eventFilter(self, obj, event):
+        """阅读模式下双击预览区进入编辑模式。"""
+        from PySide6.QtCore import QEvent
+        if obj is self.preview and event.type() == QEvent.MouseButtonDblClick:
+            if self.mode == "read":
+                self.enter_edit_mode()
+                return True
+        return super().eventFilter(obj, event)
 
 
 # ═══════════════════════════════════════════════════════════
