@@ -45,6 +45,9 @@ class QtGuiManager:
 
     def _run(self):
         self.app = QApplication([])
+        # 关键：关闭"最后一个窗口关闭即退出"的默认行为。否则用户关掉日志/待办窗口
+        # （此时是唯一窗口）会导致整个 Qt 事件循环退出，再次打开时无任何反应。
+        self.app.setQuitOnLastWindowClosed(False)
         timer = QTimer()
         timer.timeout.connect(self._drain)
         timer.start(50)
