@@ -835,8 +835,8 @@ class StickyWallpaper:
                   **btn_cfg).pack(side="left", padx=1)
 
         # ── 编辑文本框 ──
-        # 用中文等宽字体，避免 IME 组词窗口字体过小
-        editor_font = ("Microsoft YaHei UI", 12)
+        # 正文字号 14pt：拼音组词串跟随正文字体，调大后拼音更清晰
+        editor_font = ("Microsoft YaHei UI", 14)
         text_area = scrolledtext.ScrolledText(
             edit_frame, font=editor_font, wrap="word",
             bg="#ffffff", fg="#333", insertbackground="#333",
@@ -852,22 +852,22 @@ class StickyWallpaper:
         # ── 预览区 ──
         preview_frame = tk.Frame(content, bg="#fafafa")
         preview_text = scrolledtext.ScrolledText(
-            preview_frame, font=("Microsoft YaHei UI", 12), wrap="word",
+            preview_frame, font=("Microsoft YaHei UI", 14), wrap="word",
             bg="#ffffff", fg="#333", relief="flat", padx=16, pady=12,
             state="disabled",
         )
         preview_text.pack(fill="both", expand=True)
 
         # 预览区 tag 样式
-        preview_text.tag_configure("h1", font=("Microsoft YaHei UI", 20, "bold"),
+        preview_text.tag_configure("h1", font=("Microsoft YaHei UI", 22, "bold"),
                                    spacing3=6)
-        preview_text.tag_configure("h2", font=("Microsoft YaHei UI", 16, "bold"),
+        preview_text.tag_configure("h2", font=("Microsoft YaHei UI", 18, "bold"),
                                    spacing3=4)
-        preview_text.tag_configure("h3", font=("Microsoft YaHei UI", 13, "bold"),
+        preview_text.tag_configure("h3", font=("Microsoft YaHei UI", 15, "bold"),
                                    spacing3=3)
-        preview_text.tag_configure("bold", font=("Microsoft YaHei UI", 12, "bold"))
-        preview_text.tag_configure("italic", font=("Microsoft YaHei UI", 12, "italic"))
-        preview_text.tag_configure("code", font=("Consolas", 11),
+        preview_text.tag_configure("bold", font=("Microsoft YaHei UI", 14, "bold"))
+        preview_text.tag_configure("italic", font=("Microsoft YaHei UI", 14, "italic"))
+        preview_text.tag_configure("code", font=("Consolas", 13),
                                    background="#f0f0f0")
         preview_text.tag_configure("bullet", lmargin1=20, lmargin2=34)
         preview_text.tag_configure("link", foreground="#1565C0",
@@ -884,11 +884,11 @@ class StickyWallpaper:
             text_area.tag_remove("md_link", "1.0", "end")
 
             text_area.tag_configure("md_h", foreground="#1565C0",
-                                    font=("Consolas", 12, "bold"))
+                                    font=("Consolas", 14, "bold"))
             text_area.tag_configure("md_bold", foreground="#C62828",
-                                    font=("Consolas", 12, "bold"))
+                                    font=("Consolas", 14, "bold"))
             text_area.tag_configure("md_italic", foreground="#6A1B9A",
-                                    font=("Consolas", 12, "italic"))
+                                    font=("Consolas", 14, "italic"))
             text_area.tag_configure("md_code", foreground="#2E7D32",
                                     background="#E8F5E9")
             text_area.tag_configure("md_list", foreground="#E65100")
