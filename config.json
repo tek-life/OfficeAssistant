@@ -1,8 +1,0 @@
-{
-  "refresh_minutes": 1,
-  "note_position": "top_right",
-  "margin": 45,
-  "pomodoro_enabled": true,
-  "pomodoro_interval_minutes": 45,
-  "pomodoro_break_minutes": 5
-}
