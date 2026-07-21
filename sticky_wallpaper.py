@@ -26,7 +26,6 @@ import threading
 import subprocess
 import winreg
 import tkinter as tk
-import tkinter.scrolledtext as scrolledtext
 from ctypes import wintypes
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -35,6 +34,7 @@ from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from db import Database
+from qt_gui import QtGuiManager, DiaryWindow, TodoEditorWindow
 
 
 # ═══════════════════════════════════════════════════════════
@@ -444,6 +444,11 @@ class StickyWallpaper:
             font_small=make_font(13),
         )
 
+        # Qt GUI（独立线程事件循环，窗口经请求队列创建）
+        self.qt = QtGuiManager()
+        self._diary_win = None
+        self._todo_win = None
+
     # --- 单例保护（Named Mutex + Named Event）---
     def _acquire_singleton(self):
         """
@@ -667,561 +672,6 @@ class StickyWallpaper:
             print("已还原壁纸。")
         else:
             print("未找到备份壁纸，无法还原。")
-
-    # --- 输入法字体修复 ---
-    def _set_ime_font(self, text_widget, font_name: str):
-        """
-        设置输入法（IME）组词窗口字体。
-
-        Windows 上 tkinter 的 IME 组词/候选窗口不会继承 Text 组件的字体，
-        导致拼音输入时组词文字过小。通过 IMM32 API 显式设置组词字体，
-        字号直接取组件字体的真实像素高度，保证与正文等大。
-        绑定 FocusIn / KeyPress 事件，确保字体持续生效。
-        """
-        import ctypes
-
-        class LOGFONTW(ctypes.Structure):
-            _fields_ = [
-                ("lfHeight", ctypes.c_long),
-                ("lfWidth", ctypes.c_long),
-                ("lfEscapement", ctypes.c_long),
-                ("lfOrientation", ctypes.c_long),
-                ("lfWeight", ctypes.c_long),
-                ("lfItalic", ctypes.c_byte),
-                ("lfUnderline", ctypes.c_byte),
-                ("lfStrikeOut", ctypes.c_byte),
-                ("lfCharSet", ctypes.c_byte),
-                ("lfOutPrecision", ctypes.c_byte),
-                ("lfClipPrecision", ctypes.c_byte),
-                ("lfQuality", ctypes.c_byte),
-                ("lfPitchAndFamily", ctypes.c_byte),
-                ("lfFaceName", ctypes.c_wchar * 32),
-            ]
-
-        def _apply(event=None):
-            try:
-                hwnd = text_widget.winfo_id()
-                imm32 = ctypes.windll.imm32
-                himc = imm32.ImmGetContext(hwnd)
-                if not himc:
-                    return
-
-                # 直接读取组件字体在屏幕上的真实行高，
-                # 再放大到 1.5 倍，确保拼音组词串清晰够大
-                import tkinter.font as tkfont
-                widget_font = tkfont.Font(font=text_widget.cget("font"))
-                linespace = widget_font.metrics("linespace")
-                pixel_height = max(20, int(linespace * 1.5))
-
-                lf = LOGFONTW()
-                lf.lfHeight = -pixel_height   # 负值 = 像素字号
-                lf.lfWeight = 400             # FW_NORMAL
-                lf.lfCharSet = 134            # GB2312_CHARSET（简体中文）
-                lf.lfQuality = 5              # CLEARTYPE_QUALITY
-                lf.lfFaceName = font_name
-
-                imm32.ImmSetCompositionFont(himc, ctypes.byref(lf))
-                imm32.ImmReleaseContext(hwnd, himc)
-            except Exception as e:
-                print(f"[IME] 设置输入法字体失败: {e}")
-
-        # 获得焦点时应用（此时 IME 上下文才可用）
-        text_widget.bind("<FocusIn>", _apply, add="+")
-        # 窗口显示后先尝试一次
-        text_widget.after(100, _apply)
-
-        # 部分输入法会在组词过程中重置字体，按键时节流式重新应用
-        _ime_timer = [None]
-
-        def _reapply_throttled(event=None):
-            if _ime_timer[0]:
-                text_widget.after_cancel(_ime_timer[0])
-            _ime_timer[0] = text_widget.after(50, _apply)
-
-        text_widget.bind("<KeyPress>", _reapply_throttled, add="+")
-
-    # --- 工作日志窗口（Markdown 编辑 + 预览）---
-    def _show_diary(self, date_str=None):
-        """打开工作日志窗口，支持 Markdown 语法高亮、预览与历史浏览。"""
-        today = datetime.now().strftime("%Y-%m-%d")
-        current_date = [date_str or today]
-        note = self.db.get_daily_note(current_date[0])
-
-        root = tk.Tk()
-        root.title(f"工作日志 — {current_date[0]}")
-        root.configure(bg="#fafafa")
-        root.attributes("-topmost", True)
-
-        dw, dh = 750, 560
-        sx = (root.winfo_screenwidth() - dw) // 2
-        sy = (root.winfo_screenheight() - dh) // 2
-        root.geometry(f"{dw}x{dh}+{sx}+{sy}")
-
-        # ── 标题栏 ──
-        header = tk.Frame(root, bg="#fafafa")
-        header.pack(fill="x", padx=16, pady=(12, 4))
-        date_label = tk.Label(
-            header, text=f"工作日志  {current_date[0]}",
-            font=("Microsoft YaHei UI", 14, "bold"),
-            bg="#fafafa", fg="#333",
-        )
-        date_label.pack(side="left")
-
-        status_label = tk.Label(
-            header, text="", font=("Microsoft YaHei UI", 9),
-            bg="#fafafa", fg="#999",
-        )
-        status_label.pack(side="right")
-
-        # ── 内容容器（编辑区与预览区都放在这里）──
-        content = tk.Frame(root, bg="#fafafa")
-        content.pack(fill="both", expand=True, padx=16, pady=(4, 4))
-
-        # ── 编辑区（含工具栏与文本框，默认隐藏）──
-        edit_frame = tk.Frame(content, bg="#fafafa")
-
-        # ── 格式工具栏 ──
-        toolbar = tk.Frame(edit_frame, bg="#f0f0f0", relief="flat")
-        toolbar.pack(fill="x", pady=(0, 4))
-
-        def _wrap_selection(before, after=None):
-            """用 markdown 标记包裹选中文本，无选中则在光标处插入。"""
-            if after is None:
-                after = before
-            try:
-                sel = text_area.get("sel.first", "sel.last")
-                text_area.delete("sel.first", "sel.last")
-                text_area.insert("insert", f"{before}{sel}{after}")
-                # 选中刚插入的内容（方便连续操作）
-                end = text_area.index("insert")
-                start = f"{end}-{len(before) + len(sel) + len(after)}c"
-                text_area.tag_add("sel", start, end)
-            except tk.TclError:
-                text_area.insert("insert", f"{before}{after}")
-            text_area.focus_set()
-            on_text_change()
-
-        def _insert_line_prefix(prefix):
-            """在当前行首插入前缀（标题、列表、引用）。"""
-            try:
-                line_start = text_area.index("insert linestart")
-                text_area.insert(line_start, prefix)
-            except tk.TclError:
-                pass
-            text_area.focus_set()
-            on_text_change()
-
-        btn_cfg = {"font": ("Microsoft YaHei UI", 9), "relief": "flat",
-                   "bg": "#f0f0f0", "padx": 6, "pady": 2}
-
-        tk.Button(toolbar, text="B", command=lambda: _wrap_selection("**"),
-                  **{**btn_cfg, "font": ("Microsoft YaHei UI", 10, "bold")}).pack(side="left", padx=1)
-        tk.Button(toolbar, text="I", command=lambda: _wrap_selection("*"),
-                  **{**btn_cfg, "font": ("Microsoft YaHei UI", 10, "italic")}).pack(side="left", padx=1)
-        tk.Button(toolbar, text="H1", command=lambda: _insert_line_prefix("# "),
-                  **btn_cfg).pack(side="left", padx=(8, 1))
-        tk.Button(toolbar, text="H2", command=lambda: _insert_line_prefix("## "),
-                  **btn_cfg).pack(side="left", padx=1)
-        tk.Button(toolbar, text="H3", command=lambda: _insert_line_prefix("### "),
-                  **btn_cfg).pack(side="left", padx=1)
-        tk.Button(toolbar, text="代码", command=lambda: _wrap_selection("`"),
-                  **btn_cfg).pack(side="left", padx=(8, 1))
-        tk.Button(toolbar, text="• 列表", command=lambda: _insert_line_prefix("- "),
-                  **btn_cfg).pack(side="left", padx=1)
-        tk.Button(toolbar, text="1. 列表", command=lambda: _insert_line_prefix("1. "),
-                  **btn_cfg).pack(side="left", padx=1)
-        tk.Button(toolbar, text="链接",
-                  command=lambda: _wrap_selection("[", "](url)"),
-                  **btn_cfg).pack(side="left", padx=(8, 1))
-        tk.Button(toolbar, text="引用", command=lambda: _insert_line_prefix("> "),
-                  **btn_cfg).pack(side="left", padx=1)
-
-        # ── 编辑文本框 ──
-        # 正文字号 14pt：拼音组词串跟随正文字体，调大后拼音更清晰
-        editor_font = ("Microsoft YaHei UI", 14)
-        text_area = scrolledtext.ScrolledText(
-            edit_frame, font=editor_font, wrap="word",
-            bg="#ffffff", fg="#333", insertbackground="#333",
-            relief="flat", padx=12, pady=8, undo=True,
-        )
-        text_area.pack(fill="both", expand=True)
-        text_area.insert("1.0", note.get("content", ""))
-
-        # 修复输入法组词窗口字体（Windows IME 默认不继承组件字体）
-        # 字号自动取编辑器字体的真实像素高度，与正文等大
-        self._set_ime_font(text_area, "Arial")
-
-        # ── 预览区 ──
-        preview_frame = tk.Frame(content, bg="#fafafa")
-        preview_text = scrolledtext.ScrolledText(
-            preview_frame, font=("Microsoft YaHei UI", 14), wrap="word",
-            bg="#ffffff", fg="#333", relief="flat", padx=16, pady=12,
-            state="disabled",
-        )
-        preview_text.pack(fill="both", expand=True)
-
-        # 预览区 tag 样式
-        preview_text.tag_configure("h1", font=("Microsoft YaHei UI", 22, "bold"),
-                                   spacing3=6)
-        preview_text.tag_configure("h2", font=("Microsoft YaHei UI", 18, "bold"),
-                                   spacing3=4)
-        preview_text.tag_configure("h3", font=("Microsoft YaHei UI", 15, "bold"),
-                                   spacing3=3)
-        preview_text.tag_configure("bold", font=("Microsoft YaHei UI", 14, "bold"))
-        preview_text.tag_configure("italic", font=("Microsoft YaHei UI", 14, "italic"))
-        preview_text.tag_configure("code", font=("Consolas", 13),
-                                   background="#f0f0f0")
-        preview_text.tag_configure("bullet", lmargin1=20, lmargin2=34)
-        preview_text.tag_configure("link", foreground="#1565C0",
-                                   underline=True)
-        preview_text.tag_configure("hr", justify="center")
-
-        # ── Markdown 语法高亮（编辑区）──
-        def apply_highlight():
-            text_area.tag_remove("md_h", "1.0", "end")
-            text_area.tag_remove("md_bold", "1.0", "end")
-            text_area.tag_remove("md_italic", "1.0", "end")
-            text_area.tag_remove("md_code", "1.0", "end")
-            text_area.tag_remove("md_list", "1.0", "end")
-            text_area.tag_remove("md_link", "1.0", "end")
-
-            text_area.tag_configure("md_h", foreground="#1565C0",
-                                    font=("Consolas", 14, "bold"))
-            text_area.tag_configure("md_bold", foreground="#C62828",
-                                    font=("Consolas", 14, "bold"))
-            text_area.tag_configure("md_italic", foreground="#6A1B9A",
-                                    font=("Consolas", 14, "italic"))
-            text_area.tag_configure("md_code", foreground="#2E7D32",
-                                    background="#E8F5E9")
-            text_area.tag_configure("md_list", foreground="#E65100")
-            text_area.tag_configure("md_link", foreground="#1565C0",
-                                    underline=True)
-
-            content = text_area.get("1.0", "end-1c")
-            for i, line in enumerate(content.split("\n"), 1):
-                # 标题
-                if line.startswith("#"):
-                    text_area.tag_add("md_h", f"{i}.0", f"{i}.end")
-                # 列表
-                stripped = line.lstrip()
-                if stripped.startswith(("- ", "* ", "+ ")) or \
-                   (len(stripped) > 2 and stripped[0].isdigit()
-                    and stripped[1] == "."):
-                    idx = line.index(stripped[0]) if stripped[0] in line else 0
-                    text_area.tag_add("md_list", f"{i}.{idx}",
-                                      f"{i}.{idx + 2}")
-
-            # 行内格式（逐行扫描）
-            import re
-            for i, line in enumerate(content.split("\n"), 1):
-                # 粗体 **text**
-                for m in re.finditer(r'\*\*(.+?)\*\*', line):
-                    text_area.tag_add("md_bold", f"{i}.{m.start()}",
-                                      f"{i}.{m.end()}")
-                # 斜体 *text*
-                for m in re.finditer(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)',
-                                     line):
-                    text_area.tag_add("md_italic", f"{i}.{m.start()}",
-                                      f"{i}.{m.end()}")
-                # 行内代码 `code`
-                for m in re.finditer(r'`([^`]+)`', line):
-                    text_area.tag_add("md_code", f"{i}.{m.start()}",
-                                      f"{i}.{m.end()}")
-                # 链接 [text](url)
-                for m in re.finditer(r'\[([^\]]+)\]\([^)]+\)', line):
-                    text_area.tag_add("md_link", f"{i}.{m.start()}",
-                                      f"{i}.{m.end()}")
-
-        # 首次高亮
-        apply_highlight()
-        # 输入时延迟高亮（避免卡顿）
-        _highlight_timer = [None]
-
-        def on_text_change(event=None):
-            if _highlight_timer[0]:
-                root.after_cancel(_highlight_timer[0])
-            _highlight_timer[0] = root.after(300, apply_highlight)
-
-        text_area.bind("<KeyRelease>", on_text_change)
-
-        # ── Markdown 预览渲染 ──
-        def render_preview():
-            import re
-            preview_text.config(state="normal")
-            preview_text.delete("1.0", "end")
-
-            content = text_area.get("1.0", "end-1c")
-            lines = content.split("\n")
-            in_code_block = False
-
-            for line in lines:
-                # 代码块 ```
-                if line.strip().startswith("```"):
-                    in_code_block = not in_code_block
-                    if in_code_block:
-                        preview_text.insert("end", "\n")
-                    continue
-
-                if in_code_block:
-                    preview_text.insert("end", line + "\n", "code")
-                    continue
-
-                # 标题
-                if line.startswith("### "):
-                    preview_text.insert("end", line[4:] + "\n", "h3")
-                elif line.startswith("## "):
-                    preview_text.insert("end", line[3:] + "\n", "h2")
-                elif line.startswith("# "):
-                    preview_text.insert("end", line[2:] + "\n", "h1")
-                # 分割线
-                elif line.strip() in ("---", "***", "___"):
-                    preview_text.insert("end", "─" * 40 + "\n", "hr")
-                # 列表
-                elif line.lstrip().startswith(("- ", "* ", "+ ")):
-                    indent = len(line) - len(line.lstrip())
-                    text = line.lstrip()[2:]
-                    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-                    text = re.sub(r'\*(.+?)\*', r'\1', text)
-                    text = re.sub(r'`([^`]+)`', r'\1', text)
-                    preview_text.insert("end", "  " * (indent // 2) +
-                                        "•  " + text + "\n", "bullet")
-                # 有序列表
-                elif re.match(r'^\s*\d+\.\s', line):
-                    m = re.match(r'^(\s*)\d+\.\s(.+)', line)
-                    if m:
-                        text = m.group(2)
-                        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-                        text = re.sub(r'\*(.+?)\*', r'\1', text)
-                        preview_text.insert("end", "  " + text + "\n",
-                                            "bullet")
-                # 空行
-                elif not line.strip():
-                    preview_text.insert("end", "\n")
-                # 普通段落（处理行内格式）
-                else:
-                    text = line
-                    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-                    text = re.sub(r'\*(.+?)\*', r'\1', text)
-                    text = re.sub(r'`([^`]+)`', r'\1', text)
-                    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-                    preview_text.insert("end", text + "\n")
-
-            preview_text.config(state="disabled")
-
-        # ── 阅读 / 编辑 双模式 ──
-        mode = ["read"]  # "read" 或 "edit"
-
-        def enter_read_mode():
-            """切换到阅读模式：渲染 Markdown 预览。"""
-            render_preview()
-            edit_frame.pack_forget()
-            preview_frame.pack(fill="both", expand=True)
-            toggle_btn.config(text="编辑")
-            mode[0] = "read"
-
-        def enter_edit_mode():
-            """切换到编辑模式：显示工具栏与文本框。"""
-            preview_frame.pack_forget()
-            edit_frame.pack(fill="both", expand=True)
-            toggle_btn.config(text="保存并返回")
-            mode[0] = "edit"
-            apply_highlight()
-            text_area.focus_set()
-
-        def toggle_mode():
-            if mode[0] == "read":
-                enter_edit_mode()
-            else:
-                save()  # 编辑返回阅读前先保存
-                enter_read_mode()
-
-        # ── 底部按钮（锚定底部，窗口缩小时始终可见）──
-        btn_frame = tk.Frame(root, bg="#fafafa")
-        btn_frame.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
-
-        def save():
-            content = text_area.get("1.0", "end-1c")
-            self.db.save_daily_note(current_date[0], content)
-            status_label.config(text="已保存 ✓")
-            root.after(2000, lambda: status_label.config(text=""))
-
-        def save_and_close():
-            save()
-            root.destroy()
-
-        def load_date(d):
-            """加载指定日期的日志（先保存当前编辑）。"""
-            save()
-            current_date[0] = d
-            note = self.db.get_daily_note(d)
-            text_area.delete("1.0", "end")
-            text_area.insert("1.0", note.get("content", ""))
-            date_label.config(text=f"工作日志  {d}")
-            root.title(f"工作日志 — {d}")
-            apply_highlight()
-            enter_read_mode()
-
-        def open_history():
-            """弹出历史日志列表，选择日期浏览。"""
-            dates = self.db.get_all_note_dates()
-            if not dates:
-                return
-            hist = tk.Toplevel(root)
-            hist.title("历史日志")
-            hist.configure(bg="#fafafa")
-            hist.attributes("-topmost", True)
-            hw, hh = 260, 380
-            hx = root.winfo_x() + (root.winfo_width() - hw) // 2
-            hy = root.winfo_y() + (root.winfo_height() - hh) // 2
-            hist.geometry(f"{hw}x{hh}+{hx}+{hy}")
-
-            tk.Label(
-                hist, text="选择日期",
-                font=("Microsoft YaHei UI", 11, "bold"),
-                bg="#fafafa", fg="#333",
-            ).pack(pady=(12, 6))
-
-            lb = tk.Listbox(
-                hist, font=("Microsoft YaHei UI", 11), activestyle="none",
-                selectbackground="#1976D2", selectforeground="white",
-            )
-            lb.pack(fill="both", expand=True, padx=12, pady=(0, 8))
-            for d in dates:
-                lb.insert("end", d)
-
-            def on_open(event=None):
-                sel = lb.curselection()
-                if sel:
-                    load_date(dates[sel[0]])
-                    hist.destroy()
-
-            lb.bind("<Double-Button-1>", on_open)
-            tk.Button(
-                hist, text="打开", font=("Microsoft YaHei UI", 10),
-                bg="#1976D2", fg="white", padx=20, pady=4,
-                command=on_open,
-            ).pack(pady=(0, 12))
-
-        tk.Button(
-            btn_frame, text="保存", font=("Microsoft YaHei UI", 10),
-            bg="#4CAF50", fg="white", padx=16, pady=4,
-            command=save,
-        ).pack(side="left", padx=(0, 8))
-
-        tk.Button(
-            btn_frame, text="保存并关闭", font=("Microsoft YaHei UI", 10),
-            bg="#1976D2", fg="white", padx=16, pady=4,
-            command=save_and_close,
-        ).pack(side="left", padx=(0, 8))
-
-        tk.Button(
-            btn_frame, text="历史日志", font=("Microsoft YaHei UI", 10),
-            bg="#757575", fg="white", padx=16, pady=4,
-            command=open_history,
-        ).pack(side="left", padx=(0, 8))
-
-        toggle_btn = tk.Button(
-            btn_frame, text="编辑", font=("Microsoft YaHei UI", 10),
-            bg="#1976D2", fg="white", padx=16, pady=4,
-            command=toggle_mode,
-        )
-        toggle_btn.pack(side="right")
-
-        # 默认进入阅读模式（渲染 Markdown 预览）
-        enter_read_mode()
-
-        # Ctrl+S 保存, Ctrl+E 切换阅读/编辑, Ctrl+B 粗体, Ctrl+I 斜体
-        root.bind("<Control-s>", lambda e: save())
-        root.bind("<Control-e>", lambda e: toggle_mode())
-        root.bind("<Control-b>", lambda e: _wrap_selection("**"))
-        root.bind("<Control-i>", lambda e: _wrap_selection("*"))
-        root.protocol("WM_DELETE_WINDOW", save_and_close)
-        root.mainloop()
-
-    # --- 待办编辑窗口 ---
-    def _show_todo_editor(self):
-        """打开待办事项编辑窗口（tkinter）。"""
-        root = tk.Tk()
-        root.title("编辑待办")
-        root.configure(bg="#fafafa")
-        root.attributes("-topmost", True)
-
-        dw, dh = 560, 480
-        sx = (root.winfo_screenwidth() - dw) // 2
-        sy = (root.winfo_screenheight() - dh) // 2
-        root.geometry(f"{dw}x{dh}+{sx}+{sy}")
-
-        # 列表框
-        listbox = tk.Listbox(
-            root, font=("Microsoft YaHei UI", 11),
-            selectmode="single", activestyle="none",
-        )
-        listbox.pack(fill="both", expand=True, padx=16, pady=(12, 4))
-
-        def refresh_list():
-            listbox.delete(0, "end")
-            for r in self.db.get_todos():
-                mark = "☑" if r["done"] else "☐"
-                pri = {1: " ⚑", 2: " ⚑⚑"}.get(r["priority"], "")
-                listbox.insert("end", f" {mark} {r['text']}{pri}")
-
-        refresh_list()
-
-        # 操作按钮行
-        op_frame = tk.Frame(root, bg="#fafafa")
-        op_frame.pack(fill="x", padx=16, pady=4)
-
-        def toggle_selected():
-            sel = listbox.curselection()
-            if not sel:
-                return
-            rows = self.db.get_todos()
-            if sel[0] < len(rows):
-                self.db.toggle_todo(rows[sel[0]]["id"])
-                refresh_list()
-                threading.Thread(target=self.render, daemon=True).start()
-
-        def delete_selected():
-            sel = listbox.curselection()
-            if not sel:
-                return
-            rows = self.db.get_todos()
-            if sel[0] < len(rows):
-                self.db.delete_todo(rows[sel[0]]["id"])
-                refresh_list()
-                threading.Thread(target=self.render, daemon=True).start()
-
-        tk.Button(
-            op_frame, text="切换完成", font=("Microsoft YaHei UI", 9),
-            command=toggle_selected,
-        ).pack(side="left", padx=(0, 4))
-        tk.Button(
-            op_frame, text="删除", font=("Microsoft YaHei UI", 9),
-            command=delete_selected,
-        ).pack(side="left")
-
-        # 添加新待办
-        add_frame = tk.Frame(root, bg="#fafafa")
-        add_frame.pack(fill="x", padx=16, pady=(4, 12))
-
-        entry = tk.Entry(add_frame, font=("Microsoft YaHei UI", 11))
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-
-        def add_todo():
-            text = entry.get().strip()
-            if text:
-                self.db.add_todo(text)
-                entry.delete(0, "end")
-                refresh_list()
-                threading.Thread(target=self.render, daemon=True).start()
-
-        entry.bind("<Return>", lambda e: add_todo())
-        tk.Button(
-            add_frame, text="添加", font=("Microsoft YaHei UI", 9),
-            command=add_todo,
-        ).pack(side="left")
-
-        root.mainloop()
 
     # --- 番茄钟（休息提醒：定时提醒休息）---
     def _pomodoro_loop(self):
@@ -1510,10 +960,34 @@ class StickyWallpaper:
         threading.Thread(target=self.render, daemon=True).start()
 
     def _tray_edit(self):
-        threading.Thread(target=self._show_todo_editor, daemon=True).start()
+        self.qt.post(self._open_todo_editor)
 
     def _tray_diary(self):
-        threading.Thread(target=self._show_diary, daemon=True).start()
+        self.qt.post(self._open_diary)
+
+    def _refresh_wallpaper(self):
+        """供 Qt 窗口回调：数据变更后刷新壁纸（后台线程渲染）。"""
+        threading.Thread(target=self.render, daemon=True).start()
+
+    def _open_diary(self):
+        """在 Qt 线程中打开工作日志窗口。"""
+        if self._diary_win is None:
+            self._diary_win = DiaryWindow(self.db, on_saved=self._refresh_wallpaper)
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._diary_win.load_date(today)
+        self._diary_win.show()
+        self._diary_win.raise_()
+        self._diary_win.activateWindow()
+
+    def _open_todo_editor(self):
+        """在 Qt 线程中打开待办编辑窗口。"""
+        if self._todo_win is None:
+            self._todo_win = TodoEditorWindow(self.db, on_changed=self._refresh_wallpaper)
+        else:
+            self._todo_win.refresh_list()
+        self._todo_win.show()
+        self._todo_win.raise_()
+        self._todo_win.activateWindow()
 
     def _tray_restore(self):
         threading.Thread(target=self.restore, daemon=True).start()
@@ -1524,6 +998,11 @@ class StickyWallpaper:
         if icon:
             icon.stop()
         self.restore()
+        # 干净关闭 Qt 窗口与事件循环（避免退出时崩溃）
+        try:
+            self.qt.shutdown(windows=[self._diary_win, self._todo_win])
+        except Exception:
+            pass
         self._release_singleton()
         # 关闭数据库
         try:

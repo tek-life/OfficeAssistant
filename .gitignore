@@ -9,6 +9,10 @@ rendered_wallpaper.bmp
 .original_wallpaper.txt
 *.pid
 
+# User data (SQLite) & migration backups
+data/
+*.bak
+
 # Python
 __pycache__/
 *.pyc
