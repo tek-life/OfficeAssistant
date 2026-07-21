@@ -1,5 +1,5 @@
 """
-StickyWallpaper Qt GUI 模块。
+办公助手 Qt GUI 模块。
 
 为什么用 Qt：Windows 上 tkinter 的 TSF 输入法支持不完整，内联拼音组词串
 字号不跟随正文字体（偏小）。Qt 的 QTextEdit/QLineEdit 有完整 TSF 支持，

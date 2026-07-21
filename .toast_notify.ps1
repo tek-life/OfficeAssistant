@@ -16,5 +16,5 @@ $xml = @'
 $xmlDoc = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xmlDoc.LoadXml($xml)
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xmlDoc)
-$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("StickyWallpaper")
+$notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("办公助手")
 $notifier.Show($toast)

@@ -2,12 +2,14 @@
 build/
 dist/
 *.spec
+!OfficeAssistant.spec
 
 # Runtime generated files
 rendered_wallpaper.bmp
 .original_wallpaper.jpg
 .original_wallpaper.txt
 *.pid
+*.log
 
 # User data (SQLite) & migration backups
 data/

@@ -11,17 +11,17 @@ pip install -r requirements.txt
 # Run the application directly
 python sticky_wallpaper.py
 
-# Build standalone exe (requires PyInstaller)
-build.bat
-# Output: dist\StickyWallpaper.exe
+# Build standalone exe (requires PyInstaller) — uses the committed spec
+pyinstaller OfficeAssistant.spec --noconfirm
+# Output: dist\OfficeAssistant.exe
 
-# Manual PyInstaller build
-pyinstaller --onefile --noconsole --name StickyWallpaper sticky_wallpaper.py
+# Manual PyInstaller build (equivalent one-liner)
+pyinstaller --onefile --noconsole --name OfficeAssistant sticky_wallpaper.py
 ```
 
 ## Architecture
 
-StickyWallpaper is a single-file Windows desktop application (~984 lines) that renders TODO items as sticky notes onto the desktop wallpaper and provides a Pomodoro timer with break reminders.
+办公助手 (OfficeAssistant) is a Windows desktop application that renders TODO items as sticky notes onto the desktop wallpaper, and additionally provides a work diary (工作日志) and a Pomodoro timer with break reminders. Data is stored in SQLite (`data/`).
 
 ### Core Components (all in `sticky_wallpaper.py`)
 
@@ -32,7 +32,7 @@ StickyWallpaper is a single-file Windows desktop application (~984 lines) that r
 | `TodoItem` | ~107-170 | Dataclass + parser for `todos.txt` (Markdown checkbox format) |
 | `StickyNoteRenderer` | ~177-346 | Pillow-based renderer: rounded rect, shadow, fold corner, text wrapping, 6-color palette |
 | `WallpaperManager` | ~353-391 | Gets/sets wallpaper via `SystemParametersInfoW`, queries screen resolution |
-| `StickyWallpaper` | ~398-971 | Main app: singleton lock, config, tray icon, Pomodoro loop, periodic refresh |
+| `OfficeAssistant` | ~398-971 | Main app: singleton lock, config, tray icon, Pomodoro loop, periodic refresh |
 
 ### Threading Model
 
@@ -43,7 +43,7 @@ StickyWallpaper is a single-file Windows desktop application (~984 lines) that r
 
 ### Singleton Enforcement
 
-Uses Windows Named Mutex (`Global\StickyWallpaper_SingleInstance`) + Named Event (`Global\StickyWallpaper_Activate`). Second instance signals the first to refresh, then exits.
+Uses Windows Named Mutex (`Global\OfficeAssistant_SingleInstance`) + Named Event (`Global\OfficeAssistant_Activate`). Second instance signals the first to refresh, then exits.
 
 ### Rendering Pipeline
 
@@ -95,7 +95,7 @@ Parsing stops at the next `#` heading after `# TODO`.
 
 - **pystray daemon thread**: `run_detached()` runs the tray icon in a separate thread. Menu callbacks must NOT call CPU-intensive operations (like `render()`) directly in the icon thread — spawn a daemon thread instead.
 - **Config persistence**: All state changes (e.g. toggling `pomodoro_enabled`) must call `_save_config()` immediately. Users expect config.json to be "visible and editable" — never rely on in-memory defaults alone.
-- **Build prerequisite**: Must `Stop-Process -Name StickyWallpaper` before rebuilding exe, otherwise PyInstaller fails with `PermissionError`.
+- **Build prerequisite**: Must `Stop-Process -Name OfficeAssistant` before rebuilding exe, otherwise PyInstaller fails with `PermissionError`.
 - **PowerShell stderr false-positive**: PyInstaller stderr output is misreported as exit code 1 in PowerShell — safe to ignore.
 
 ### Render Scheduling (Critical)

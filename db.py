@@ -1,5 +1,5 @@
 """
-StickyWallpaper 数据库模块 — SQLite 存储层。
+办公助手 数据库模块 — SQLite 存储层。
 
 三张表：
   - todos:        待办事项（替代 todos.txt）

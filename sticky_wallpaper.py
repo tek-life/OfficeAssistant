@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-StickyWallpaper — 把每日 TODO 以便利贴风格渲染到桌面壁纸上。
+办公助手 — 集成今日待办、工作日志与番茄钟；把每日 TODO 以便签风格渲染到桌面壁纸上。
 
 用法:
   1. 安装依赖:  pip install Pillow pystray
@@ -80,8 +80,8 @@ HWND_BROADCAST = 0xFFFF
 WM_SYSCOMMAND = 0x0112
 
 # 单例标识
-MUTEX_NAME = "Global\\StickyWallpaper_SingleInstance"
-EVENT_NAME = "Global\\StickyWallpaper_Activate"
+MUTEX_NAME = "Global\\OfficeAssistant_SingleInstance"
+EVENT_NAME = "Global\\OfficeAssistant_Activate"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -401,7 +401,7 @@ class WallpaperManager:
 # 主程序
 # ═══════════════════════════════════════════════════════════
 
-class StickyWallpaper:
+class OfficeAssistant:
     """应用主类：串联 todo 解析 → 渲染 → 壁纸设置 → 系统托盘。"""
 
     DEFAULT_CONFIG = {
@@ -472,8 +472,8 @@ class StickyWallpaper:
                 kernel32.CloseHandle(mutex)
             user32.MessageBoxW(
                 0,
-                "便利贴壁纸已经在运行中，已通知它刷新壁纸。",
-                "StickyWallpaper",
+                "办公助手已经在运行中，已通知它刷新壁纸。",
+                "办公助手",
                 0x40,  # MB_ICONINFORMATION
             )
             sys.exit(0)
@@ -1029,8 +1029,8 @@ class StickyWallpaper:
             pystray.MenuItem("还原壁纸", self._tray_restore),
             pystray.MenuItem("退出", self._tray_quit),
         )
-        self.tray = pystray.Icon("StickyWallpaper", self._make_icon_image(),
-                                 "便利贴壁纸", menu)
+        self.tray = pystray.Icon("OfficeAssistant", self._make_icon_image(),
+                                 "办公助手", menu)
 
     def _refresh_loop(self):
         interval = self.config["refresh_minutes"] * 60
@@ -1058,7 +1058,7 @@ class StickyWallpaper:
 # ═══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    app = StickyWallpaper()
+    app = OfficeAssistant()
     try:
         app.run()
     except KeyboardInterrupt:
