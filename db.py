@@ -169,6 +169,13 @@ class Database:
         )
         self.conn.commit()
 
+    def get_all_note_dates(self) -> list:
+        """返回所有日志日期（新→旧）。"""
+        rows = self.conn.execute(
+            "SELECT date FROM daily_notes ORDER BY date DESC"
+        ).fetchall()
+        return [r["date"] for r in rows]
+
     # ── Settings ────────────────────────────────────────────
 
     def get_setting(self, key: str, default=None):

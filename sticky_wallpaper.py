@@ -741,13 +741,14 @@ class StickyWallpaper:
         text_widget.bind("<KeyPress>", _reapply_throttled, add="+")
 
     # --- 工作日志窗口（Markdown 编辑 + 预览）---
-    def _show_diary(self):
-        """打开工作日志编辑窗口，支持 Markdown 语法高亮和预览。"""
+    def _show_diary(self, date_str=None):
+        """打开工作日志窗口，支持 Markdown 语法高亮、预览与历史浏览。"""
         today = datetime.now().strftime("%Y-%m-%d")
-        note = self.db.get_daily_note(today)
+        current_date = [date_str or today]
+        note = self.db.get_daily_note(current_date[0])
 
         root = tk.Tk()
-        root.title(f"工作日志 — {today}")
+        root.title(f"工作日志 — {current_date[0]}")
         root.configure(bg="#fafafa")
         root.attributes("-topmost", True)
 
@@ -759,11 +760,12 @@ class StickyWallpaper:
         # ── 标题栏 ──
         header = tk.Frame(root, bg="#fafafa")
         header.pack(fill="x", padx=16, pady=(12, 4))
-        tk.Label(
-            header, text=f"工作日志  {today}",
+        date_label = tk.Label(
+            header, text=f"工作日志  {current_date[0]}",
             font=("Microsoft YaHei UI", 14, "bold"),
             bg="#fafafa", fg="#333",
-        ).pack(side="left")
+        )
+        date_label.pack(side="left")
 
         status_label = tk.Label(
             header, text="", font=("Microsoft YaHei UI", 9),
@@ -1033,19 +1035,72 @@ class StickyWallpaper:
                 save()  # 编辑返回阅读前先保存
                 enter_read_mode()
 
-        # ── 底部按钮 ──
+        # ── 底部按钮（锚定底部，窗口缩小时始终可见）──
         btn_frame = tk.Frame(root, bg="#fafafa")
-        btn_frame.pack(fill="x", padx=16, pady=(0, 12))
+        btn_frame.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
 
         def save():
             content = text_area.get("1.0", "end-1c")
-            self.db.save_daily_note(today, content)
+            self.db.save_daily_note(current_date[0], content)
             status_label.config(text="已保存 ✓")
             root.after(2000, lambda: status_label.config(text=""))
 
         def save_and_close():
             save()
             root.destroy()
+
+        def load_date(d):
+            """加载指定日期的日志（先保存当前编辑）。"""
+            save()
+            current_date[0] = d
+            note = self.db.get_daily_note(d)
+            text_area.delete("1.0", "end")
+            text_area.insert("1.0", note.get("content", ""))
+            date_label.config(text=f"工作日志  {d}")
+            root.title(f"工作日志 — {d}")
+            apply_highlight()
+            enter_read_mode()
+
+        def open_history():
+            """弹出历史日志列表，选择日期浏览。"""
+            dates = self.db.get_all_note_dates()
+            if not dates:
+                return
+            hist = tk.Toplevel(root)
+            hist.title("历史日志")
+            hist.configure(bg="#fafafa")
+            hist.attributes("-topmost", True)
+            hw, hh = 260, 380
+            hx = root.winfo_x() + (root.winfo_width() - hw) // 2
+            hy = root.winfo_y() + (root.winfo_height() - hh) // 2
+            hist.geometry(f"{hw}x{hh}+{hx}+{hy}")
+
+            tk.Label(
+                hist, text="选择日期",
+                font=("Microsoft YaHei UI", 11, "bold"),
+                bg="#fafafa", fg="#333",
+            ).pack(pady=(12, 6))
+
+            lb = tk.Listbox(
+                hist, font=("Microsoft YaHei UI", 11), activestyle="none",
+                selectbackground="#1976D2", selectforeground="white",
+            )
+            lb.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+            for d in dates:
+                lb.insert("end", d)
+
+            def on_open(event=None):
+                sel = lb.curselection()
+                if sel:
+                    load_date(dates[sel[0]])
+                    hist.destroy()
+
+            lb.bind("<Double-Button-1>", on_open)
+            tk.Button(
+                hist, text="打开", font=("Microsoft YaHei UI", 10),
+                bg="#1976D2", fg="white", padx=20, pady=4,
+                command=on_open,
+            ).pack(pady=(0, 12))
 
         tk.Button(
             btn_frame, text="保存", font=("Microsoft YaHei UI", 10),
@@ -1057,6 +1112,12 @@ class StickyWallpaper:
             btn_frame, text="保存并关闭", font=("Microsoft YaHei UI", 10),
             bg="#1976D2", fg="white", padx=16, pady=4,
             command=save_and_close,
+        ).pack(side="left", padx=(0, 8))
+
+        tk.Button(
+            btn_frame, text="历史日志", font=("Microsoft YaHei UI", 10),
+            bg="#757575", fg="white", padx=16, pady=4,
+            command=open_history,
         ).pack(side="left", padx=(0, 8))
 
         toggle_btn = tk.Button(
