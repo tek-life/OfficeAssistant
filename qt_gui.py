@@ -21,7 +21,7 @@ from PySide6.QtGui import QFont, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QTextEdit, QPlainTextEdit, QDialog, QListWidget,
-    QListWidgetItem, QLineEdit, QMessageBox,
+    QListWidgetItem, QLineEdit, QMessageBox, QCheckBox, QTabBar, QSizePolicy,
 )
 
 BASE_FONT = "Microsoft YaHei UI"
@@ -379,7 +379,7 @@ class DiaryWindow(QWidget):
 # ═══════════════════════════════════════════════════════════
 
 class TodoEditorWindow(QWidget):
-    """待办事项编辑：列表 + 勾选/删除 + 新增输入框。"""
+    """待办事项编辑与归档管理。"""
 
     def __init__(self, db, on_changed=None):
         super().__init__()
@@ -397,22 +397,28 @@ class TodoEditorWindow(QWidget):
         root.setContentsMargins(18, 14, 18, 14)
         root.setSpacing(8)
 
+        self.tabs = QTabBar()
+        self.tabs.setFont(QFont(BASE_FONT, 11))
+        self.tabs.addTab("待办")
+        self.tabs.addTab("已归档")
+        root.addWidget(self.tabs)
+
         self.list = QListWidget()
         self.list.setFont(QFont(BASE_FONT, 12))
         root.addWidget(self.list, 1)
 
         ops = QHBoxLayout()
-        for text, fn in (("切换完成", self.toggle_selected),
-                         ("删除", self.delete_selected)):
-            b = QPushButton(text)
-            b.setFont(QFont(BASE_FONT, 10))
-            b.setFixedHeight(30)
-            b.clicked.connect(fn)
-            ops.addWidget(b)
+        delete_button = QPushButton("删除")
+        delete_button.setFont(QFont(BASE_FONT, 10))
+        delete_button.setFixedHeight(30)
+        delete_button.clicked.connect(self.delete_selected)
+        ops.addWidget(delete_button)
         ops.addStretch(1)
         root.addLayout(ops)
 
-        add_row = QHBoxLayout()
+        self.add_controls = QWidget()
+        add_row = QHBoxLayout(self.add_controls)
+        add_row.setContentsMargins(0, 0, 0, 0)
         self.entry = QLineEdit()
         self.entry.setFont(QFont(BASE_FONT, 12))
         self.entry.setPlaceholderText("输入新待办，回车添加…")
@@ -426,35 +432,89 @@ class TodoEditorWindow(QWidget):
                          "border:none;border-radius:5px;padding:0 16px;}")
         ab.clicked.connect(self.add_todo)
         add_row.addWidget(ab)
-        root.addLayout(add_row)
+        root.addWidget(self.add_controls)
+        self.tabs.currentChanged.connect(self.refresh_list)
 
     def _rows(self):
-        return self.db.get_todos()
+        return self.db.get_todos(archived=self.tabs.currentIndex() == 1)
 
     def refresh_list(self):
+        current = self.list.currentItem()
+        selected_id = current.data(Qt.UserRole) if current else None
+        scroll_position = self.list.verticalScrollBar().value()
+        archived = self.tabs.currentIndex() == 1
+        self.add_controls.setVisible(not archived)
         self.list.clear()
         for r in self._rows():
-            mark = "☑" if r["done"] else "☐"
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, r["id"])
+            item.setData(Qt.AccessibleTextRole, r["text"])
+            self.list.addItem(item)
+
+            row = QWidget()
+            row.setFont(self.list.font())
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(6, 4, 6, 4)
+
+            checkbox = QCheckBox()
+            checkbox.setAccessibleName(r["text"])
+            checkbox.setChecked(bool(r["done"]))
+            checkbox.setEnabled(not archived)
+            checkbox.clicked.connect(
+                lambda checked=False, tid=r["id"]: self._toggle_todo(tid)
+            )
+            layout.addWidget(checkbox)
+
             pri = {1: "  ⚑", 2: "  ⚑⚑"}.get(r["priority"], "")
-            self.list.addItem(QListWidgetItem(f"{mark}  {r['text']}{pri}"))
+            label = QLabel(f"{r['text']}{pri}")
+            label.setTextFormat(Qt.PlainText)
+            row.setToolTip(f"<qt>{_html.escape(r['text'])}</qt>")
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            label.setAttribute(Qt.WA_TransparentForMouseEvents)
+            font = QFont(self.list.font())
+            font.setStrikeOut(bool(r["done"]))
+            label.setFont(font)
+            layout.addWidget(label, 1)
+
+            if archived or r["done"]:
+                action = self._restore_todo if archived else self._archive_todo
+                button = QPushButton("恢复" if archived else "归档")
+                button.setFont(QFont(BASE_FONT, 10))
+                button.setFixedHeight(30)
+                button.clicked.connect(
+                    lambda checked=False, tid=r["id"], fn=action: fn(tid)
+                )
+                layout.addWidget(button)
+
+            item.setSizeHint(row.sizeHint())
+            self.list.setItemWidget(item, row)
+            if r["id"] == selected_id:
+                self.list.setCurrentItem(item)
+        self.list.verticalScrollBar().setValue(scroll_position)
 
     def _notify(self):
         if self.on_changed:
             self.on_changed()
 
-    def toggle_selected(self):
-        row = self.list.currentRow()
-        rows = self._rows()
-        if 0 <= row < len(rows):
-            self.db.toggle_todo(rows[row]["id"])
-            self.refresh_list()
-            self._notify()
+    def _toggle_todo(self, todo_id):
+        self.db.toggle_todo(todo_id)
+        self.refresh_list()
+        self._notify()
+
+    def _archive_todo(self, todo_id):
+        self.db.archive_todo(todo_id)
+        self.refresh_list()
+        self._notify()
+
+    def _restore_todo(self, todo_id):
+        self.db.restore_todo(todo_id)
+        self.refresh_list()
+        self._notify()
 
     def delete_selected(self):
-        row = self.list.currentRow()
-        rows = self._rows()
-        if 0 <= row < len(rows):
-            self.db.delete_todo(rows[row]["id"])
+        item = self.list.currentItem()
+        if item is not None:
+            self.db.delete_todo(item.data(Qt.UserRole))
             self.refresh_list()
             self._notify()
 

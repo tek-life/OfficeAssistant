@@ -39,6 +39,7 @@ class Database:
                 sort_order   INTEGER NOT NULL DEFAULT 0,
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 completed_at TEXT,
+                archived_at  TEXT,
                 updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
 
@@ -61,21 +62,22 @@ class Database:
                 updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
         """)
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(todos)")}
+        if "archived_at" not in columns:
+            self.conn.execute("ALTER TABLE todos ADD COLUMN archived_at TEXT")
         self.conn.commit()
 
     # ── Todos CRUD ──────────────────────────────────────────
 
-    def get_todos(self, category: str = "") -> list:
-        """获取待办列表，按 sort_order 排序。"""
+    def get_todos(self, category: str = "", *, archived: bool = False) -> list:
+        archive_filter = "IS NOT NULL" if archived else "IS NULL"
+        order = "archived_at DESC, id DESC" if archived else "sort_order, id"
+        sql = f"SELECT * FROM todos WHERE archived_at {archive_filter}"
+        params = []
         if category:
-            rows = self.conn.execute(
-                "SELECT * FROM todos WHERE category=? ORDER BY sort_order, id",
-                (category,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM todos ORDER BY sort_order, id"
-            ).fetchall()
+            sql += " AND category=?"
+            params.append(category)
+        rows = self.conn.execute(f"{sql} ORDER BY {order}", params).fetchall()
         return [dict(r) for r in rows]
 
     def add_todo(self, text: str, category: str = "", priority: int = 0,
@@ -96,7 +98,7 @@ class Database:
     def toggle_todo(self, todo_id: int):
         """切换完成状态，自动记录/清除 completed_at。"""
         row = self.conn.execute(
-            "SELECT done FROM todos WHERE id=?", (todo_id,)
+            "SELECT done FROM todos WHERE id=? AND archived_at IS NULL", (todo_id,)
         ).fetchone()
         if row is None:
             return
@@ -104,8 +106,25 @@ class Database:
         completed = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if new_done else None
         self.conn.execute(
             "UPDATE todos SET done=?, completed_at=?, "
-            "updated_at=datetime('now','localtime') WHERE id=?",
+            "updated_at=datetime('now','localtime') "
+            "WHERE id=? AND archived_at IS NULL",
             (new_done, completed, todo_id),
+        )
+        self.conn.commit()
+
+    def archive_todo(self, todo_id: int):
+        self.conn.execute(
+            "UPDATE todos SET archived_at=?, updated_at=datetime('now','localtime') "
+            "WHERE id=? AND done=1 AND archived_at IS NULL",
+            (datetime.now().isoformat(sep=" ", timespec="microseconds"), todo_id),
+        )
+        self.conn.commit()
+
+    def restore_todo(self, todo_id: int):
+        self.conn.execute(
+            "UPDATE todos SET archived_at=NULL, "
+            "updated_at=datetime('now','localtime') "
+            "WHERE id=? AND archived_at IS NOT NULL", (todo_id,),
         )
         self.conn.commit()
 
