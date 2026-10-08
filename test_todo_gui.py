@@ -74,6 +74,90 @@ class TodoEditorTests(unittest.TestCase):
         self.app.processEvents()
         return todo_id
 
+    def created_label(self, index=0):
+        labels = [label for label in self.row_widget(index).findChildren(QLabel)
+                  if label.text().startswith("创建于 ")]
+        self.assertEqual(len(labels), 1, "每条任务应显示一行创建时间")
+        return labels[0]
+
+    def test_creation_time_uses_stored_local_time_to_the_minute(self):
+        todo_id = self.db.add_todo("较早创建的任务")
+        self.db.conn.execute(
+            "UPDATE todos SET created_at=? WHERE id=?",
+            ("2025-12-31 23:59:47", todo_id),
+        )
+        self.db.conn.commit()
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.assertEqual(self.created_label().text(), "创建于 2025-12-31 23:59")
+        self.assertEqual(self.notifications, 0)
+
+    def test_new_todo_shows_its_own_creation_time(self):
+        self.window.entry.setText("新增任务")
+        QTest.keyClick(self.window.entry, Qt.Key_Return)
+        self.app.processEvents()
+        row = self.db.get_todos()[0]
+        self.assertEqual(self.created_label().text(), f"创建于 {row['created_at'][:16]}")
+
+    def test_creation_time_unchanged_after_completing_archiving_and_restoring(self):
+        todo_id = self.db.add_todo("保留创建时间")
+        self.db.conn.execute(
+            "UPDATE todos SET created_at=? WHERE id=?",
+            ("2024-02-29 08:05:30", todo_id),
+        )
+        self.db.conn.commit()
+        self.window.refresh_list()
+        self.app.processEvents()
+        expected = "创建于 2024-02-29 08:05"
+        self.assertEqual(self.created_label().text(), expected)
+        self.click(self.checkbox())
+        self.assertEqual(self.created_label().text(), expected)
+        self.assertFalse(self.created_label().font().strikeOut())
+        self.click(self.row_button("归档"))
+        self.switch_tab(1)
+        self.assertEqual(self.created_label().text(), expected)
+        self.assertFalse(self.created_label().font().strikeOut())
+        self.click(self.row_button("恢复"))
+        self.switch_tab(0)
+        self.assertEqual(self.created_label().text(), expected)
+        self.assertEqual(self.db.get_todos()[0]["created_at"], "2024-02-29 08:05:30")
+
+    def test_creation_time_is_secondary_line_and_fits_narrow_window(self):
+        self.add_done("需要保留足够空间的长任务标题 " * 12)
+        self.window.resize(380, 360)
+        self.app.processEvents()
+        row = self.row_widget()
+        title = row.findChild(QLabel)
+        created = self.created_label()
+        button = self.row_button("归档")
+        self.assertGreater(created.geometry().top(), title.geometry().bottom())
+        self.assertEqual(created.geometry().left(), title.geometry().left())
+        self.assertLess(created.font().pointSizeF(), title.font().pointSizeF())
+        self.assertGreaterEqual(created.width(), created.fontMetrics().horizontalAdvance(created.text()))
+        self.assertTrue(row.rect().contains(created.geometry()))
+        self.assertTrue(row.rect().contains(button.geometry()))
+        self.assertFalse(created.geometry().intersects(button.geometry()))
+
+    def test_creation_time_has_muted_foreground_in_list(self):
+        self.add_done("区分正文与创建时间")
+        title = self.row_widget().findChild(QLabel)
+        created = self.created_label()
+        title_color = title.palette().color(title.foregroundRole())
+        created_color = created.palette().color(created.foregroundRole())
+        self.assertLess(created_color.alpha(), title_color.alpha())
+        self.assertGreater(created_color.alpha(), 0)
+
+    def test_clicking_creation_time_selects_without_toggling(self):
+        self.db.add_todo("原先选中的任务")
+        todo_id = self.db.add_todo("点击时间只选中任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.window.list.setCurrentRow(0)
+        self.click(self.created_label(1))
+        self.assertEqual(self.window.list.currentItem().data(Qt.UserRole), todo_id)
+        self.assertTrue(all(r["done"] == 0 for r in self.db.get_todos()))
+        self.assertEqual(self.notifications, 0)
+
     def test_tabs_default_to_active_and_handle_empty_lists(self):
         tabs = self.window.findChild(QTabBar)
         self.assertIsNotNone(tabs)

@@ -17,7 +17,7 @@ from datetime import datetime
 
 import shiboken6
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtGui import QFont, QPalette, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QTextEdit, QPlainTextEdit, QDialog, QListWidget,
@@ -454,7 +454,8 @@ class TodoEditorWindow(QWidget):
             row = QWidget()
             row.setFont(self.list.font())
             layout = QHBoxLayout(row)
-            layout.setContentsMargins(6, 4, 6, 4)
+            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setSpacing(10)
 
             checkbox = QCheckBox()
             checkbox.setAccessibleName(r["text"])
@@ -463,8 +464,10 @@ class TodoEditorWindow(QWidget):
             checkbox.clicked.connect(
                 lambda checked=False, tid=r["id"]: self._toggle_todo(tid)
             )
-            layout.addWidget(checkbox)
+            layout.addWidget(checkbox, 0, Qt.AlignTop)
 
+            text_layout = QVBoxLayout()
+            text_layout.setSpacing(4)
             pri = {1: "  ⚑", 2: "  ⚑⚑"}.get(r["priority"], "")
             label = QLabel(f"{r['text']}{pri}")
             label.setTextFormat(Qt.PlainText)
@@ -474,7 +477,18 @@ class TodoEditorWindow(QWidget):
             font = QFont(self.list.font())
             font.setStrikeOut(bool(r["done"]))
             label.setFont(font)
-            layout.addWidget(label, 1)
+            text_layout.addWidget(label)
+
+            created_label = QLabel(f"创建于 {r['created_at'][:16]}")
+            created_label.setFont(QFont(BASE_FONT, 10))
+            created_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+            secondary_color = self.list.palette().color(QPalette.Text)
+            secondary_color.setAlphaF(0.65)
+            palette = created_label.palette()
+            palette.setColor(QPalette.Text, secondary_color)
+            created_label.setPalette(palette)
+            text_layout.addWidget(created_label)
+            layout.addLayout(text_layout, 1)
 
             if archived or r["done"]:
                 action = self._restore_todo if archived else self._archive_todo
