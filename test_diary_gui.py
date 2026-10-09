@@ -147,11 +147,14 @@ class DiaryWindowTests(unittest.TestCase):
 
     def test_toolbar_fits_default_window_without_clipping_labels(self):
         self.click(self.window.toggle_btn)
-        self.assertEqual(self.window.width(), 780)
-        for button in self.window.toolbar.findChildren(QPushButton):
-            with self.subTest(label=button.text()):
-                self.assertTrue(self.window.toolbar.rect().contains(button.geometry()))
-                self.assertGreater(button.width(), button.fontMetrics().horizontalAdvance(button.text()))
+        for expanded in (True, False):
+            self.assertEqual(self.window.calendar_panel.isVisible(), expanded)
+            for button in self.window.toolbar.findChildren(QPushButton):
+                with self.subTest(expanded=expanded, label=button.text()):
+                    self.assertTrue(self.window.toolbar.rect().contains(button.geometry()))
+                    self.assertGreater(button.width(), button.fontMetrics().horizontalAdvance(button.text()))
+            if expanded:
+                self.click(self.window.history_button)
 
     def test_save_and_reload_preserves_source_and_display_formats(self):
         self.click(self.window.toggle_btn)

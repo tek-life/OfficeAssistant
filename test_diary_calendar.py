@@ -44,9 +44,10 @@ class DiaryCalendarTests(unittest.TestCase):
 
     def open_calendar(self):
         calendar = self.window.findChild(QCalendarWidget)
-        self.assertIsNotNone(calendar, "历史日志应使用可点击的月历")
-        self.window.open_history()
-        self.app.processEvents()
+        self.assertIsNotNone(calendar, "日志日历应使用可点击的月历")
+        if calendar.isVisible():
+            self.click(self.window.history_button)
+        self.click(self.window.history_button)
         self.assertTrue(calendar.isVisible())
         return calendar
 
@@ -65,6 +66,40 @@ class DiaryCalendarTests(unittest.TestCase):
                     self.app.processEvents()
                     return
         self.fail(f"月历缺少日期 {day}")
+
+    def test_calendar_is_expanded_by_default(self):
+        self.assertTrue(self.window.calendar_panel.isVisible())
+        self.assertTrue(self.window.calendar.isVisible())
+        self.assertTrue(self.window.history_button.isChecked())
+        self.assertEqual(self.window.history_button.text(), "收起日历")
+        self.assertGreaterEqual(self.window.width(), 1090)
+        self.assertEqual(self.notifications, 0)
+
+    def test_calendar_toggle_label_matches_visibility(self):
+        self.open_calendar()
+        self.assertEqual(self.window.history_button.text(), "收起日历")
+        self.click(self.window.history_button)
+        self.assertTrue(self.window.calendar_panel.isHidden())
+        self.assertFalse(self.window.history_button.isChecked())
+        self.assertEqual(self.window.history_button.text(), "打开日历")
+        self.click(self.window.history_button)
+        self.assertTrue(self.window.calendar_panel.isVisible())
+        self.assertTrue(self.window.history_button.isChecked())
+        self.assertEqual(self.window.history_button.text(), "收起日历")
+
+    def test_tray_reopening_expands_previously_collapsed_calendar(self):
+        for closed in (False, True):
+            with self.subTest(closed=closed):
+                self.open_calendar()
+                self.click(self.window.history_button)
+                self.assertTrue(self.window.calendar_panel.isHidden())
+                if closed:
+                    self.window.close()
+                self.reopen_from_tray()
+                self.assertTrue(self.window.calendar_panel.isVisible())
+                self.assertEqual(self.window.history_button.text(), "收起日历")
+                self.assertEqual(self.window.current_date,
+                                 QDate.currentDate().toString("yyyy-MM-dd"))
 
     def test_history_opens_even_without_notes(self):
         calendar = self.open_calendar()

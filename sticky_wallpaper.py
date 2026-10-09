@@ -976,6 +976,8 @@ class OfficeAssistant:
         today = datetime.now().strftime("%Y-%m-%d")
         if self._diary_win.save():
             self._diary_win.load_date(today)
+        if self._diary_win.calendar_panel.isHidden():
+            self._diary_win.open_history()
         self._diary_win.show()
         self._diary_win.raise_()
         self._diary_win.activateWindow()

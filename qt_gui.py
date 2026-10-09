@@ -238,6 +238,7 @@ class DiaryWindow(QWidget):
         self._closed = False
         self._build_ui()
         self.enter_read_mode()
+        self.open_history()
 
     def _build_ui(self):
         self.setWindowTitle(f"工作日志 — {self.current_date}")
@@ -272,7 +273,7 @@ class DiaryWindow(QWidget):
         title.setFont(QFont(BASE_FONT, 17, QFont.Bold))
         title_row.addWidget(title)
         title_row.addStretch(1)
-        self.history_button = QPushButton("历史日志")
+        self.history_button = QPushButton("打开日历")
         self.history_button.setCheckable(True)
         self.history_button.setFixedHeight(34)
         self.history_button.clicked.connect(self.open_history)
@@ -407,7 +408,7 @@ class DiaryWindow(QWidget):
         layout.setContentsMargins(18, 20, 18, 20)
         layout.setSpacing(14)
         title_row = QHBoxLayout()
-        title = QLabel("历史日志")
+        title = QLabel("日志日历")
         title.setFont(QFont(BASE_FONT, 12, QFont.Bold))
         title_row.addWidget(title)
         title_row.addStretch(1)
@@ -569,7 +570,7 @@ class DiaryWindow(QWidget):
         show = self.calendar_panel.isHidden()
         self.calendar_panel.setVisible(show)
         self.history_button.setChecked(show)
-        self.history_button.setText("收起日历" if show else "历史日志")
+        self.history_button.setText("收起日历" if show else "打开日历")
         self.setMinimumSize(1090 if show else 740,
                             max(560, self.minimumSizeHint().height()) if show else 560)
         if show:
