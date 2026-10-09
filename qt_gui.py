@@ -91,12 +91,22 @@ class QtGuiManager:
 
 def _inline(s: str) -> str:
     """处理行内格式（输入已 HTML 转义）。"""
+    code_spans = []
+
+    def protect_code(match):
+        code_spans.append(
+            f'<code style="background:#eef2f5;padding:1px 4px;">{match.group(1)}</code>')
+        return f'<code-placeholder-{len(code_spans) - 1}/>'
+
+    # 先保护代码片段；输入已转义，不会与原始 HTML 占位标签冲突。
+    s = re.sub(r'`([^`]+)`', protect_code, s)
     s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
     s = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', s)
-    s = re.sub(r'`([^`]+)`',
-               r'<code style="background:#eef2f5;padding:1px 4px;">\1</code>', s)
+    s = re.sub(r'~~(.+?)~~', r'<s>\1</s>', s)
+    s = re.sub(r'&lt;u&gt;(.+?)&lt;/u&gt;', r'<u>\1</u>', s)
     s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'<u>\1</u>', s)
-    return s
+    return re.sub(r'<code-placeholder-(\d+)/>',
+                  lambda m: code_spans[int(m.group(1))], s)
 
 
 def md_to_html(md: str) -> str:
@@ -193,17 +203,23 @@ class DiaryWindow(QWidget):
         tb.setContentsMargins(0, 0, 0, 0)
         tb.setSpacing(4)
 
-        def tbtn(text, fn, bold=False, italic=False):
+        def tbtn(text, fn, bold=False, italic=False, strike=False, underline=False):
             b = QPushButton(text)
-            b.setFont(QFont(BASE_FONT, 10, QFont.Bold if bold else QFont.Normal,
-                            italic))
+            font = QFont(BASE_FONT, 10, QFont.Bold if bold else QFont.Normal, italic)
+            font.setStrikeOut(strike)
+            font.setUnderline(underline)
+            b.setFont(font)
             b.setFixedHeight(26)
+            b.setFixedWidth(b.fontMetrics().horizontalAdvance(text) + 24)
             b.clicked.connect(fn)
             tb.addWidget(b)
             return b
 
         tbtn("B", lambda: self._wrap("**"), bold=True)
         tbtn("I", lambda: self._wrap("*"), italic=True)
+        tbtn("S", lambda: self._wrap("~~"), strike=True).setToolTip("删除线（~~文字~~）")
+        tbtn("U", lambda: self._wrap("<u>", "</u>"), underline=True).setToolTip(
+            "下划线（<u>文字</u>）")
         tbtn("H1", lambda: self._prefix("# "))
         tbtn("H2", lambda: self._prefix("## "))
         tbtn("H3", lambda: self._prefix("### "))
