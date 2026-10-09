@@ -163,20 +163,10 @@ class Database:
     # ── Daily Notes CRUD ────────────────────────────────────
 
     def get_daily_note(self, date_str: str) -> dict:
-        """获取指定日期的日志，不存在则自动创建空记录。"""
         row = self.conn.execute(
             "SELECT * FROM daily_notes WHERE date=?", (date_str,)
         ).fetchone()
-        if row:
-            return dict(row)
-        self.conn.execute(
-            "INSERT INTO daily_notes (date) VALUES (?)", (date_str,)
-        )
-        self.conn.commit()
-        row = self.conn.execute(
-            "SELECT * FROM daily_notes WHERE date=?", (date_str,)
-        ).fetchone()
-        return dict(row)
+        return dict(row) if row else {"date": date_str, "content": ""}
 
     def save_daily_note(self, date_str: str, content: str):
         """保存日志内容（upsert）。"""
@@ -189,11 +179,10 @@ class Database:
         self.conn.commit()
 
     def get_all_note_dates(self) -> list:
-        """返回所有日志日期（新→旧）。"""
         rows = self.conn.execute(
-            "SELECT date FROM daily_notes ORDER BY date DESC"
-        ).fetchall()
-        return [r["date"] for r in rows]
+            "SELECT date, content FROM daily_notes ORDER BY date DESC"
+        )
+        return [r["date"] for r in rows if r["content"].strip()]
 
     # ── Settings ────────────────────────────────────────────
 

@@ -974,7 +974,8 @@ class OfficeAssistant:
         if self._diary_win is None:
             self._diary_win = DiaryWindow(self.db, on_saved=self._refresh_wallpaper)
         today = datetime.now().strftime("%Y-%m-%d")
-        self._diary_win.load_date(today)
+        if self._diary_win.save():
+            self._diary_win.load_date(today)
         self._diary_win.show()
         self._diary_win.raise_()
         self._diary_win.activateWindow()

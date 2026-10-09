@@ -159,5 +159,48 @@ class TodoArchiveTests(unittest.TestCase):
         self.assertEqual(self.db.get_todos(archived=True), [])
 
 
+class DiaryDatesTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = Path(self.temp_dir.name) / "diary.db"
+        self.db = Database(self.db_path)
+        self.addCleanup(lambda: self.db.close())
+
+    def test_reading_missing_date_does_not_create_a_record(self):
+        note = self.db.get_daily_note("2024-02-29")
+        self.assertEqual(note["content"], "")
+        self.assertEqual(self.db.conn.execute(
+            "SELECT COUNT(*) FROM daily_notes"
+        ).fetchone()[0], 0)
+
+    def test_only_nonblank_notes_are_marked_newest_first(self):
+        for date, content in (
+            ("2026-10-01", "# 工作日志"),
+            ("2026-10-02", ""),
+            ("2026-10-03", " \t\n\r\u3000\u00a0"),
+            ("2026-10-04", "  完成测试  "),
+            ("2025-12-31", "历史记录"),
+        ):
+            self.db.save_daily_note(date, content)
+        self.assertEqual(self.db.get_all_note_dates(),
+                         ["2026-10-04", "2026-10-01", "2025-12-31"])
+
+    def test_clearing_content_removes_marker_without_losing_other_notes(self):
+        self.db.save_daily_note("2026-10-08", "保留的记录")
+        self.db.save_daily_note("2026-10-09", "要清空的记录")
+        self.db.save_daily_note("2026-10-09", "\n\t")
+        self.assertEqual(self.db.get_all_note_dates(), ["2026-10-08"])
+        self.assertEqual(self.db.get_daily_note("2026-10-08")["content"], "保留的记录")
+
+    def test_saved_note_and_marker_survive_reopening(self):
+        self.db.save_daily_note("2024-02-29", "# 闰日\n\n完整正文")
+        self.db.close()
+        self.db = Database(self.db_path)
+        self.assertEqual(self.db.get_all_note_dates(), ["2024-02-29"])
+        self.assertEqual(self.db.get_daily_note("2024-02-29")["content"],
+                         "# 闰日\n\n完整正文")
+
+
 if __name__ == "__main__":
     unittest.main()
