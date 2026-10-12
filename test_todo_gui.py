@@ -345,6 +345,41 @@ class TodoEditorTests(unittest.TestCase):
                          "#242424")
         self.assertEqual(self.window.windowTitle(), "待办清单")
 
+    def test_integrated_titlebar_keeps_content_and_window_controls_separate(self):
+        bar = self.window.findChild(QLabel, "titleBarLabel")
+        self.assertIsNotNone(bar)
+        self.assertEqual(bar.text(), "待办清单")
+        self.assertEqual(bar.parentWidget().height(), 40)
+        self.assertEqual(self.window.layout().contentsMargins().top(), 0)
+        self.assertGreater(self.window.summary.mapTo(self.window, QPoint()).y(), 40)
+        self.assertTrue(self.window.entry.isVisible())
+
+    def test_initial_focus_stays_in_todo_input(self):
+        self.assertIs(self.window.focusWidget(), self.window.entry)
+
+    def test_caption_close_preserves_todos_for_reopening(self):
+        button = self.window.findChild(QPushButton, "captionClose")
+        self.assertIsNotNone(button)
+        self.db.add_todo("关闭不删除")
+        self.window.refresh_list()
+        self.click(button)
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window._closed)
+        self.window.show()
+        self.app.processEvents()
+        self.assertEqual(self.window.list.count(), 1)
+        self.assertEqual(self.db.get_todos()[0]["text"], "关闭不删除")
+
+    def test_caption_controls_fit_minimum_todo_width(self):
+        self.window.resize(self.window.minimumSize())
+        self.app.processEvents()
+        for name in ("captionMinimize", "captionMaximize", "captionClose"):
+            button = self.window.findChild(QPushButton, name)
+            self.assertIsNotNone(button)
+            self.assertEqual(button.size().width(), 42)
+            self.assertTrue(button.parentWidget().rect().contains(button.geometry()))
+            self.assertTrue(button.accessibleName())
+
     def test_empty_state_distinguishes_active_and_archived_lists(self):
         title = self.window.findChild(QLabel, "todoEmptyTitle")
         self.assertIsNotNone(title)

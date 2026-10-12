@@ -19,6 +19,7 @@ import threading
 from datetime import datetime
 
 import shiboken6
+from window_chrome import ChromeWindow
 from PySide6.QtCore import (
     QDate, QLocale, QObject, QPointF, QRectF, QSignalBlocker, QTimer, Qt, QUrl, Signal,
 )
@@ -37,6 +38,7 @@ COLORS = {
     "surface": "#ffffff", "sidebar": "#fafafa", "text": "#242424",
     "secondary": "#707070", "border": "#e5e5e5", "hover": "#f2f2f2",
     "selected": "#ededed", "disabled": "#a0a0a0",
+    "danger": "#d62424", "danger_pressed": "#b51f1f",
 }
 WINDOW_STYLE = """
 QWidget#todoWindow, QWidget#diaryWindow { background: %(surface)s; }
@@ -52,7 +54,15 @@ QPushButton[variant="primary"] { background: %(text)s; color: %(surface)s; }
 QPushButton[variant="primary"]:hover { background: #3b3b3b; }
 QPushButton[variant="primary"]:focus { border: 2px solid %(secondary)s; }
 QPushButton[variant="quiet"] { color: %(secondary)s; }
-QWidget#diaryHeader { border-bottom: 1px solid %(border)s; }
+QWidget#titleBar { background: %(surface)s; border-bottom: 1px solid %(border)s; }
+QLabel#titleBarLabel { color: %(secondary)s; font-size: 12px; }
+QPushButton[caption="true"] { border: 0; border-radius: 0; padding: 0; }
+QPushButton[caption="true"]:focus { border: 1px solid %(secondary)s; }
+QPushButton#captionClose:hover { background: %(danger)s; color: %(surface)s; }
+QPushButton#captionClose:pressed { background: %(danger_pressed)s; color: %(surface)s; }
+QWidget#titleBar QPushButton#calendarToggle { border-radius: 0; padding: 0 14px;
+    border: 0; border-right: 1px solid %(border)s; font-size: 12px; }
+QWidget#titleBar QPushButton#calendarToggle:focus { border: 1px solid %(secondary)s; }
 QWidget#calendarPanel { background: %(sidebar)s; border-right: 1px solid %(border)s; }
 QWidget#diaryContent { background: %(surface)s; }
 QWidget#diaryFooter { border-top: 1px solid %(border)s; }
@@ -398,7 +408,7 @@ class ShanghaiWeather(QObject):
             reply.deleteLater()
 
 
-class DiaryWindow(QWidget):
+class DiaryWindow(ChromeWindow):
     """工作日志：默认阅读模式（Markdown 渲染），点"编辑"进入编辑模式。"""
 
     def __init__(self, db, on_saved=None):
@@ -426,24 +436,15 @@ class DiaryWindow(QWidget):
         self.setMinimumSize(740, 560)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         _apply_window_style(self)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        title_bar = QWidget()
-        title_bar.setObjectName("diaryHeader")
-        title_row = QHBoxLayout(title_bar)
-        title_row.setContentsMargins(28, 16, 24, 16)
-        title = QLabel("工作日志")
-        title.setFont(QFont(BASE_FONT, 13, QFont.DemiBold))
-        title_row.addWidget(title)
-        title_row.addStretch(1)
+        outer = self.chrome_layout
+        self.title_bar.title_label.setText("工作日志")
         self.history_button = QPushButton("打开日历")
+        self.history_button.setObjectName("calendarToggle")
         self.history_button.setProperty("variant", "quiet")
         self.history_button.setCheckable(True)
-        self.history_button.setFixedHeight(34)
+        self.history_button.setFixedHeight(40)
         self.history_button.clicked.connect(self.open_history)
-        title_row.addWidget(self.history_button)
-        outer.addWidget(title_bar)
+        self.title_bar.actions_layout.addWidget(self.history_button)
 
         panels = QHBoxLayout()
         panels.setSpacing(0)
@@ -588,6 +589,7 @@ class DiaryWindow(QWidget):
         self.toggle_btn = button("编辑日志", self.toggle_mode)
         self.toggle_btn.setProperty("variant", "primary")
         root.addWidget(footer)
+        self.preview.setFocus()
 
     def _build_calendar_panel(self):
         self.calendar_panel = QWidget()
@@ -818,13 +820,14 @@ class DiaryWindow(QWidget):
         self.setMinimumSize(1090 if show else 740,
                             max(560, self.minimumSizeHint().height()) if show else 560)
         if show:
-            self.resize(max(self.width(), 1140), self.height())
+            if not self.isMaximized() and not self.isFullScreen():
+                self.resize(max(self.width(), 1140), self.height())
             self._sync_calendar_selection()
             try:
                 self._refresh_calendar_marks()
             except sqlite3.Error as exc:
                 QMessageBox.warning(self, "无法刷新日历", f"记录标记未更新，请稍后重试。\n{exc}")
-        else:
+        elif not self.isMaximized() and not self.isFullScreen():
             self.resize(max(780, self.width() - 350), self.height())
 
     def _sync_calendar_selection(self):
@@ -900,7 +903,7 @@ class DiaryWindow(QWidget):
 # 待办编辑窗口
 # ═══════════════════════════════════════════════════════════
 
-class TodoEditorWindow(QWidget):
+class TodoEditorWindow(ChromeWindow):
     """待办事项编辑与归档管理。"""
 
     def __init__(self, db, on_changed=None):
@@ -914,11 +917,14 @@ class TodoEditorWindow(QWidget):
     def _build_ui(self):
         self.setWindowTitle("待办清单")
         self.setObjectName("todoWindow")
-        self.resize(680, 620)
-        self.setMinimumSize(440, 420)
+        self.resize(680, 660)
+        self.setMinimumSize(440, 460)
         _apply_window_style(self)
+        self.title_bar.title_label.setText("待办清单")
 
-        root = QVBoxLayout(self)
+        content = QWidget()
+        self.chrome_layout.addWidget(content, 1)
+        root = QVBoxLayout(content)
         root.setContentsMargins(28, 24, 28, 20)
         root.setSpacing(12)
         title_row = QHBoxLayout()
@@ -1006,6 +1012,7 @@ class TodoEditorWindow(QWidget):
         self.input_hint.setWordWrap(True)
         root.addWidget(self.input_hint)
         self.tabs.currentChanged.connect(self.refresh_list)
+        self.entry.setFocus()
 
     def _rows(self):
         return self.db.get_todos(archived=self.tabs.currentIndex() == 1)

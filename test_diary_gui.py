@@ -5,10 +5,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import shiboken6
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QPushButton, QWidget
 
 from db import Database
 from qt_gui import DiaryWindow, md_to_html
@@ -214,6 +214,65 @@ class DiaryWindowTests(unittest.TestCase):
         self.assertEqual(panel_color.name(), "#fafafa")
         self.assertEqual(self.window.date_label.text(), "10 月 9 日")
         self.assertIn("2026", self.window.date_meta.text())
+
+    def test_titlebar_merges_diary_heading_and_calendar_action(self):
+        bar = self.window.findChild(QWidget, "titleBar")
+        self.assertIsNotNone(bar)
+        self.assertEqual(bar.height(), 40)
+        title = bar.findChild(QLabel, "titleBarLabel")
+        self.assertEqual(title.text(), "工作日志")
+        self.assertIsNone(self.window.findChild(QWidget, "diaryHeader"))
+        self.assertTrue(bar.isAncestorOf(self.window.history_button))
+        self.assertEqual(self.window.calendar_panel.mapTo(self.window, QPoint()).y(), 40)
+        self.assertEqual(self.window.windowTitle(), "工作日志 — 2026-10-09")
+        self.click(self.window.history_button)
+        self.assertFalse(self.window.calendar_panel.isVisible())
+        self.assertEqual(self.window.history_button.text(), "打开日历")
+        self.click(self.window.history_button)
+        self.assertTrue(self.window.calendar_panel.isVisible())
+
+    def test_initial_focus_stays_out_of_caption_controls(self):
+        bar = self.window.findChild(QWidget, "titleBar")
+        self.assertFalse(bar.isAncestorOf(self.window.focusWidget()))
+
+    def test_caption_close_keeps_unsaved_draft_in_existing_editor(self):
+        button = self.window.findChild(QPushButton, "captionClose")
+        self.assertIsNotNone(button)
+        self.window.enter_edit_mode()
+        self.window.editor.setPlainText("尚未保存的草稿")
+        self.click(button)
+        self.assertFalse(self.window.isVisible())
+        self.assertTrue(self.window._closed)
+        self.window.show()
+        self.app.processEvents()
+        self.assertEqual(self.window.editor.toPlainText(), "尚未保存的草稿")
+        self.assertEqual(self.window.mode, "edit")
+        self.click(self.window.save_button)
+        self.assertEqual(self.db.get_daily_note("2026-10-09")["content"], "尚未保存的草稿")
+
+    def test_calendar_toggle_does_not_restore_maximized_window(self):
+        self.window.showMaximized()
+        self.app.processEvents()
+        self.assertTrue(self.window.isMaximized())
+        self.click(self.window.history_button)
+        self.assertTrue(self.window.isMaximized())
+        self.click(self.window.history_button)
+        self.assertTrue(self.window.isMaximized())
+
+    def test_titlebar_controls_fit_compact_diary_without_overlap(self):
+        self.click(self.window.history_button)
+        self.window.resize(self.window.minimumSize())
+        self.app.processEvents()
+        bar = self.window.findChild(QWidget, "titleBar")
+        self.assertIsNotNone(bar)
+        action = self.window.history_button
+        action_right = action.mapTo(bar, action.rect().topRight()).x()
+        minimize = bar.findChild(QPushButton, "captionMinimize")
+        self.assertIsNotNone(minimize)
+        self.assertLess(action_right, minimize.mapTo(bar, QPoint()).x())
+        for name in ("captionMinimize", "captionMaximize", "captionClose"):
+            button = bar.findChild(QPushButton, name)
+            self.assertTrue(button.parentWidget().rect().contains(button.geometry()))
 
     def test_secondary_save_actions_only_appear_while_editing(self):
         buttons = {b.text(): b for b in self.window.findChildren(QPushButton)}
