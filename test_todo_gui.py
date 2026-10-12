@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import shiboken6
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QHelpEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -335,6 +335,118 @@ class TodoEditorTests(unittest.TestCase):
         self.switch_tab(1)
         self.assertEqual(self.window.list.count(), 1)
         self.assertTrue(self.row_button("恢复").isVisible())
+
+    def test_window_uses_white_surface_and_dark_primary_action(self):
+        self.assertEqual(self.window.palette().color(self.window.backgroundRole()).name(),
+                         "#ffffff")
+        add_button = self.window.findChild(QPushButton, "addTodo")
+        self.assertIsNotNone(add_button)
+        self.assertEqual(add_button.palette().color(add_button.backgroundRole()).name(),
+                         "#242424")
+        self.assertEqual(self.window.windowTitle(), "待办清单")
+
+    def test_empty_state_distinguishes_active_and_archived_lists(self):
+        title = self.window.findChild(QLabel, "todoEmptyTitle")
+        self.assertIsNotNone(title)
+        self.assertTrue(title.isVisible())
+        self.assertEqual(title.text(), "清单很干净")
+        self.switch_tab(1)
+        self.assertEqual(title.text(), "还没有归档事项")
+        self.switch_tab(0)
+        self.window.entry.setText("开始工作")
+        QTest.keyClick(self.window.entry, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertFalse(title.isVisible())
+        self.assertTrue(self.window.list.isVisible())
+
+    def test_summary_tracks_completion_and_archive_state(self):
+        summary = self.window.findChild(QLabel, "todoSummary")
+        self.assertIsNotNone(summary)
+        self.db.add_todo("第一件事")
+        self.db.add_todo("第二件事")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.assertEqual(summary.text(), "2 件待完成 · 0 件已完成")
+        self.click(self.checkbox())
+        self.assertEqual(summary.text(), "1 件待完成 · 1 件已完成")
+        self.click(self.row_button("归档"))
+        self.assertEqual(summary.text(), "1 件待完成 · 0 件已完成")
+        self.switch_tab(1)
+        self.assertEqual(summary.text(), "已归档 1 件 · 可随时恢复")
+
+    def test_delete_is_disabled_until_a_task_is_selected(self):
+        button = next(b for b in self.window.findChildren(QPushButton)
+                      if b.text() == "删除")
+        self.assertFalse(button.isEnabled())
+        self.db.add_todo("选择后删除")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.assertFalse(button.isEnabled())
+        self.click(self.row_widget().findChild(QLabel))
+        self.assertTrue(button.isEnabled())
+        self.click(button)
+        self.assertFalse(button.isEnabled())
+        self.assertEqual(self.window.list.count(), 0)
+
+    def test_checkbox_supports_keyboard_and_visible_focus(self):
+        self.db.add_todo("键盘完成")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.checkbox().setFocus()
+        QTest.keyClick(self.checkbox(), Qt.Key_Space)
+        self.app.processEvents()
+        self.assertTrue(self.checkbox().isChecked())
+        self.assertTrue(self.checkbox().hasFocus())
+        self.assertEqual(self.notifications, 1)
+
+    def test_checkbox_edges_toggle_their_task(self):
+        self.db.add_todo("边缘点击")
+        self.window.refresh_list()
+        self.app.processEvents()
+        for index, point in enumerate((QPoint(20, 12), QPoint(12, 20),
+                                       QPoint(4, 12), QPoint(12, 4))):
+            with self.subTest(point=point):
+                QTest.mouseClick(self.checkbox(), Qt.LeftButton, pos=point)
+                self.app.processEvents()
+                self.assertEqual(self.db.get_todos()[0]["done"], (index + 1) % 2)
+                self.assertEqual(self.notifications, index + 1)
+
+    def test_ctrl_deselect_disables_delete_with_current_item_remaining(self):
+        self.db.add_todo("取消选择")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.window.list.setCurrentRow(0)
+        item = self.window.list.item(0)
+        QTest.mouseClick(self.window.list.viewport(), Qt.LeftButton, Qt.ControlModifier,
+                         self.window.list.visualItemRect(item).center())
+        self.app.processEvents()
+        self.assertIs(self.window.list.currentItem(), item)
+        self.assertEqual(self.window.list.selectedItems(), [])
+        self.assertFalse(self.window.delete_button.isEnabled())
+        self.click(self.window.delete_button)
+        self.assertEqual(len(self.db.get_todos()), 1)
+        self.assertEqual(self.notifications, 0)
+
+    def test_delete_without_selection_does_not_remove_current_item(self):
+        self.db.add_todo("未选中时保留")
+        self.window.refresh_list()
+        self.window.list.setCurrentRow(0)
+        self.window.list.clearSelection()
+        self.window.delete_selected()
+        self.assertEqual(len(self.db.get_todos()), 1)
+        self.assertEqual(self.notifications, 0)
+
+    def test_toggling_after_deselect_does_not_restore_delete_selection(self):
+        self.db.add_todo("取消选择的任务")
+        self.db.add_todo("仅勾选的任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        self.window.list.setCurrentRow(0)
+        self.window.list.clearSelection()
+        self.click(self.checkbox(1))
+        self.assertEqual(self.window.list.selectedItems(), [])
+        self.assertFalse(self.window.delete_button.isEnabled())
+        self.assertEqual([r["done"] for r in self.db.get_todos()], [0, 1])
 
 
 if __name__ == "__main__":

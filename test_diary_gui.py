@@ -8,7 +8,7 @@ import shiboken6
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QLabel, QListWidget, QPushButton
 
 from db import Database
 from qt_gui import DiaryWindow, md_to_html
@@ -79,6 +79,12 @@ class DiaryMarkdownTests(unittest.TestCase):
         self.assertIn("<b>粗体</b> <i>斜体</i>", rendered)
         self.assertIn(">代码</code> <u>链接</u>", rendered)
         self.assertIn("<hr/>", rendered)
+
+    def test_quote_uses_a_reading_block_and_escapes_markup(self):
+        rendered = md_to_html("> 一点 **想法** <img src=x>")
+        self.assertIn("<blockquote", rendered)
+        self.assertIn("一点 <b>想法</b> &lt;img src=x&gt;", rendered)
+        self.assertNotIn("<img", rendered)
 
 
 class DiaryWindowTests(unittest.TestCase):
@@ -199,6 +205,76 @@ class DiaryWindowTests(unittest.TestCase):
         self.assertFalse(literal.charFormat().fontUnderline())
         self.assertTrue(document.find("删除").charFormat().fontStrikeOut())
         self.assertTrue(document.find("强调").charFormat().fontUnderline())
+
+    def test_reading_surface_matches_neutral_preview(self):
+        self.assertEqual(self.window.palette().color(self.window.backgroundRole()).name(),
+                         "#ffffff")
+        panel_color = self.window.calendar_panel.palette().color(
+            self.window.calendar_panel.backgroundRole())
+        self.assertEqual(panel_color.name(), "#fafafa")
+        self.assertEqual(self.window.date_label.text(), "10 月 9 日")
+        self.assertIn("2026", self.window.date_meta.text())
+
+    def test_secondary_save_actions_only_appear_while_editing(self):
+        buttons = {b.text(): b for b in self.window.findChildren(QPushButton)}
+        save = buttons.get("保存")
+        close = buttons.get("保存并关闭")
+        self.assertIsNotNone(save)
+        self.assertIsNotNone(close)
+        self.assertTrue(save.isHidden())
+        self.assertTrue(close.isHidden())
+        self.click(self.window.toggle_btn)
+        self.assertTrue(save.isVisible())
+        self.assertTrue(close.isVisible())
+        self.window.editor.setPlainText("保留保存能力")
+        self.click(save)
+        self.assertEqual(self.window.mode, "edit")
+        self.assertEqual(self.db.get_daily_note("2026-10-09")["content"], "保留保存能力")
+        self.click(self.window.toggle_btn)
+        self.assertTrue(save.isHidden())
+        self.assertTrue(close.isHidden())
+
+    def test_document_hint_tracks_content_and_edit_mode(self):
+        hint = self.window.findChild(QLabel, "documentHint")
+        self.assertIsNotNone(hint)
+        self.window.enter_edit_mode()
+        self.assertIn("Markdown", hint.text())
+        self.window.editor.setPlainText("正文 内容")
+        self.click(self.window.toggle_btn)
+        self.assertEqual(hint.text(), "4 字 · 双击正文编辑")
+        self.window.enter_edit_mode()
+        self.window.editor.clear()
+        self.click(self.window.toggle_btn)
+        self.assertIn("每一天", hint.text())
+
+    def test_month_record_list_opens_history_and_saves_draft(self):
+        self.db.save_daily_note("2026-10-08", "已有记录")
+        self.window.load_date("2026-10-09")
+        recent = self.window.findChild(QListWidget, "recentNotes")
+        self.assertIsNotNone(recent)
+        self.assertEqual(recent.count(), 1)
+        self.window.enter_edit_mode()
+        self.window.editor.setPlainText("待保存草稿")
+        item = recent.item(0)
+        QTest.mouseClick(recent.viewport(), Qt.LeftButton,
+                         pos=recent.visualItemRect(item).center())
+        self.app.processEvents()
+        self.assertEqual(self.window.current_date, "2026-10-08")
+        self.assertEqual(self.window.editor.toPlainText(), "已有记录")
+        self.assertEqual(self.db.get_daily_note("2026-10-09")["content"], "待保存草稿")
+
+    def test_toolbar_and_footer_fit_minimum_size_in_both_modes(self):
+        self.window.enter_edit_mode()
+        for expanded in (True, False):
+            self.window.resize(self.window.minimumSize())
+            self.app.processEvents()
+            for button in self.window.toolbar.findChildren(QPushButton):
+                self.assertTrue(self.window.toolbar.rect().contains(button.geometry()))
+                self.assertGreater(button.width(), button.fontMetrics().horizontalAdvance(button.text()))
+            for button in (self.window.toggle_btn, self.window.history_button):
+                self.assertTrue(button.parentWidget().rect().contains(button.geometry()))
+            if expanded:
+                self.click(self.window.history_button)
 
 
 if __name__ == "__main__":

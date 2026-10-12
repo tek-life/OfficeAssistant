@@ -33,6 +33,103 @@ from PySide6.QtWidgets import (
 
 BASE_FONT = "Microsoft YaHei UI"
 BASE_SIZE = 13  # pt
+COLORS = {
+    "surface": "#ffffff", "sidebar": "#fafafa", "text": "#242424",
+    "secondary": "#707070", "border": "#e5e5e5", "hover": "#f2f2f2",
+    "selected": "#ededed", "disabled": "#a0a0a0",
+}
+WINDOW_STYLE = """
+QWidget#todoWindow, QWidget#diaryWindow { background: %(surface)s; }
+QLabel { background: transparent; }
+QLabel[tone="secondary"] { color: %(secondary)s; }
+QPushButton { background: transparent; color: %(text)s; border: 1px solid transparent;
+    border-radius: 7px; padding: 6px 12px; }
+QPushButton:hover { background: %(hover)s; }
+QPushButton:pressed { background: %(selected)s; }
+QPushButton:focus { border-color: %(secondary)s; }
+QPushButton:disabled { color: %(disabled)s; }
+QPushButton[variant="primary"] { background: %(text)s; color: %(surface)s; }
+QPushButton[variant="primary"]:hover { background: #3b3b3b; }
+QPushButton[variant="primary"]:focus { border: 2px solid %(secondary)s; }
+QPushButton[variant="quiet"] { color: %(secondary)s; }
+QWidget#diaryHeader { border-bottom: 1px solid %(border)s; }
+QWidget#calendarPanel { background: %(sidebar)s; border-right: 1px solid %(border)s; }
+QWidget#diaryContent { background: %(surface)s; }
+QWidget#diaryFooter { border-top: 1px solid %(border)s; }
+QSpinBox, QComboBox { color: %(text)s; background: %(sidebar)s;
+    border: 1px solid transparent; border-radius: 5px; padding: 4px; }
+QSpinBox:hover, QComboBox:hover, QSpinBox:focus, QComboBox:focus { border-color: %(border)s; }
+QComboBox QAbstractItemView { background: %(surface)s; color: %(text)s;
+    selection-background-color: %(selected)s; selection-color: %(text)s; }
+QTabBar::tab { color: %(secondary)s; background: transparent;
+    padding: 10px 4px; margin-right: 24px; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: %(text)s; border-bottom-color: %(text)s; }
+QTabBar::tab:hover { color: %(text)s; }
+QWidget#todoNavigation { border-bottom: 1px solid %(border)s; }
+QListWidget { background: transparent; color: %(text)s; border: 0; outline: 0; }
+QListWidget::item { border: 0; border-radius: 6px; }
+QListWidget::item:hover { background: %(sidebar)s; }
+QListWidget::item:selected { background: %(selected)s; color: %(text)s; }
+QListWidget::item:focus { border: 1px solid %(secondary)s; }
+QWidget#todoRow { background: transparent; border-bottom: 1px solid %(border)s; }
+QWidget#todoInput { background: %(sidebar)s; border: 1px solid %(border)s; border-radius: 10px; }
+QLineEdit#todoEntry { color: %(text)s; background: transparent; border: 1px solid transparent;
+    border-radius: 5px; padding: 5px; selection-background-color: %(selected)s;
+    selection-color: %(text)s; }
+QLineEdit#todoEntry:focus { border-color: %(secondary)s; }
+QTextEdit, QPlainTextEdit { color: %(text)s; background: %(surface)s; border: 0;
+    selection-background-color: %(selected)s; selection-color: %(text)s; }
+QPlainTextEdit:focus { border-bottom: 1px solid %(border)s; }
+QWidget#formatToolbar { border-bottom: 1px solid %(border)s; }
+QWidget#formatToolbar QPushButton { padding: 0; }
+QListWidget#recentNotes::item { padding: 8px; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
+QScrollBar::handle:vertical { background: #cecece; min-height: 28px; border-radius: 4px; }
+QScrollBar::handle:vertical:hover { background: #b3b3b3; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
+""" % COLORS
+
+
+def _apply_window_style(window):
+    palette = window.palette()
+    for role in (QPalette.Window, QPalette.Base, QPalette.Button):
+        palette.setColor(role, QColor(COLORS["surface"]))
+    for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
+        palette.setColor(role, QColor(COLORS["text"]))
+        palette.setColor(QPalette.Disabled, role, QColor(COLORS["disabled"]))
+    palette.setColor(QPalette.Highlight, QColor(COLORS["selected"]))
+    palette.setColor(QPalette.HighlightedText, QColor(COLORS["text"]))
+    palette.setColor(QPalette.PlaceholderText, QColor(COLORS["secondary"]))
+    window.setPalette(palette)
+    window.setFont(QFont(BASE_FONT, 10))
+    window.setStyleSheet(WINDOW_STYLE)
+
+
+class TodoCheckBox(QCheckBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(24, 24)
+
+    def hitButton(self, pos):
+        return self.rect().contains(pos)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        color = COLORS["text"] if self.isEnabled() else COLORS["secondary"]
+        painter.setBrush(QColor(color) if self.isChecked() else Qt.NoBrush)
+        painter.setPen(QPen(QColor(color if self.isChecked() else "#a0a0a0"), 1))
+        painter.drawRoundedRect(QRectF(3, 3, 18, 18), 4, 4)
+        if self.isChecked():
+            painter.setPen(QPen(QColor(COLORS["surface"]), 1.8, Qt.SolidLine,
+                                Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(QPointF(7, 12), QPointF(10, 15))
+            painter.drawLine(QPointF(10, 15), QPointF(17, 8))
+        if self.hasFocus():
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(COLORS["secondary"]), 1, Qt.DotLine))
+            painter.drawRoundedRect(QRectF(0.5, 0.5, 23, 23), 5, 5)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -102,7 +199,7 @@ def _inline(s: str) -> str:
 
     def protect_code(match):
         code_spans.append(
-            f'<code style="background:#eef2f5;padding:1px 4px;">{match.group(1)}</code>')
+            f'<code style="background:{COLORS["hover"]};padding:1px 4px;">{match.group(1)}</code>')
         return f'<code-placeholder-{len(code_spans) - 1}/>'
 
     # 先保护代码片段；输入已转义，不会与原始 HTML 占位标签冲突。
@@ -127,7 +224,7 @@ def md_to_html(md: str) -> str:
                 out.append("</pre>")
                 in_code = False
             else:
-                out.append('<pre style="background:#f4f6f8;padding:8px;'
+                out.append(f'<pre style="background:{COLORS["sidebar"]};padding:12px;'
                            'font-family:Consolas,monospace;">')
                 in_code = True
             continue
@@ -144,6 +241,9 @@ def md_to_html(md: str) -> str:
             out.append(f"<h1>{_inline(esc[2:])}</h1>")
         elif line.strip() in ("---", "***", "___"):
             out.append("<hr/>")
+        elif line.startswith("> "):
+            out.append(f'<blockquote style="color:{COLORS["secondary"]};">'
+                       f'{_inline(esc[5:])}</blockquote>')
         elif line.lstrip().startswith(("- ", "* ", "+ ")):
             indent = len(line) - len(line.lstrip())
             pad = "&nbsp;" * indent
@@ -162,8 +262,15 @@ def md_to_html(md: str) -> str:
     if in_code:
         out.append("</pre>")
     body = "\n".join(out)
-    return (f"<html><body style='font-family:{BASE_FONT};font-size:{BASE_SIZE}pt;"
-            f"color:#333;'>{body}</body></html>")
+    return ("<html><head><style>"
+            "h1 { font-size:22pt; margin-top:12px; margin-bottom:16px; }"
+            "h2 { font-size:16pt; margin-top:20px; margin-bottom:12px; }"
+            "h3 { font-size:14pt; margin-top:16px; margin-bottom:10px; }"
+            "p { line-height:160%; }"
+            "blockquote { margin:16px 0 16px 16px; }"
+            "</style></head>"
+            f"<body style='font-family:{BASE_FONT};font-size:{BASE_SIZE}pt;"
+            f"color:{COLORS['text']};'>{body}</body></html>")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -180,17 +287,18 @@ class DiaryCalendar(QCalendarWidget):
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
         self.setHorizontalHeaderFormat(QCalendarWidget.ShortDayNames)
         self.setDateRange(QDate(1900, 1, 1), QDate(9999, 12, 31))
-        self.setFont(QFont(BASE_FONT, 10))
+        self.setFont(QFont(BASE_FONT, 9))
         self.setMinimumWidth(280)
-        self.setFixedHeight(294)
+        self.setFixedHeight(238)
         self.setAccessibleName("日志日历")
         self.setStyleSheet(
-            "QCalendarWidget QAbstractItemView{background:#fff;color:#758197;"
-            "border:0;outline:0;selection-background-color:transparent;}"
+            f"QCalendarWidget QAbstractItemView{{background:{COLORS['sidebar']};"
+            f"color:{COLORS['secondary']};border:0;outline:0;"
+            "selection-background-color:transparent;}"
         )
         header_format = QTextCharFormat()
-        header_format.setForeground(QColor("#758197"))
-        header_format.setBackground(QColor("#fff"))
+        header_format.setForeground(QColor(COLORS["secondary"]))
+        header_format.setBackground(QColor(COLORS["sidebar"]))
         self.setHeaderTextFormat(header_format)
         self.setWeekdayTextFormat(Qt.Saturday, header_format)
         self.setWeekdayTextFormat(Qt.Sunday, header_format)
@@ -208,25 +316,25 @@ class DiaryCalendar(QCalendarWidget):
     def paintCell(self, painter, rect, date):
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(rect, QColor("#fff"))
+        painter.fillRect(rect, QColor(COLORS["sidebar"]))
         selected = date == self.selectedDate()
         today = date == QDate.currentDate()
         in_month = date.month() == self.monthShown() and date.year() == self.yearShown()
         bounds = QRectF(rect).adjusted(3, 3, -3, -3)
-        painter.setBrush(QColor("#eaf1ff") if selected else Qt.NoBrush)
-        painter.setPen(QPen(QColor("#527cce"), 1.2) if today else Qt.NoPen)
+        painter.setBrush(QColor(COLORS["text"]) if selected else Qt.NoBrush)
+        painter.setPen(QPen(QColor(COLORS["secondary"]), 1) if today else Qt.NoPen)
         if selected or today:
-            painter.drawRoundedRect(bounds, 7, 7)
-        color = "#285db5" if selected else ("#34415a" if in_month else "#aab3c2")
+            painter.drawRoundedRect(bounds, 6, 6)
+        color = COLORS["surface"] if selected else COLORS["text" if in_month else "disabled"]
         painter.setPen(QColor(color))
         font = self.font()
-        font.setBold(selected or date in self.recorded_dates)
+        font.setBold(selected)
         painter.setFont(font)
-        painter.drawText(rect.adjusted(0, 0, 0, -6), Qt.AlignCenter, str(date.day()))
+        painter.drawText(rect.adjusted(0, 0, 0, -3), Qt.AlignCenter, str(date.day()))
         if date in self.recorded_dates:
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor("#527cce" if in_month else "#aabbdc"))
-            painter.drawEllipse(QPointF(rect.center().x(), rect.bottom() - 8), 2.5, 2.5)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(QPointF(rect.center().x(), rect.bottom() - 6), 1.5, 1.5)
         painter.restore()
 
 
@@ -314,45 +422,31 @@ class DiaryWindow(QWidget):
     def _build_ui(self):
         self.setWindowTitle(f"工作日志 — {self.current_date}")
         self.setObjectName("diaryWindow")
-        self.resize(780, 640)
+        self.resize(780, 740)
         self.setMinimumSize(740, 560)
         self.setAttribute(Qt.WA_DeleteOnClose, False)
-        self.setFont(QFont(BASE_FONT, 10))
-        self.setStyleSheet(
-            "QWidget#diaryWindow{background:#f4f6fa;}"
-            "QWidget#diaryWindow QLabel{color:#34415a;background:transparent;}"
-            "QWidget#calendarPanel,QWidget#diaryContent{background:#fff;"
-            "border:1px solid #e4e9f1;border-radius:12px;}"
-            "QWidget#diaryWindow QPushButton{background:#fff;color:#52617a;"
-            "border:1px solid #dfe5ef;border-radius:6px;padding:5px 12px;}"
-            "QWidget#diaryWindow QPushButton:hover{background:#f0f4fc;border-color:#bacceb;}"
-            "QWidget#diaryWindow QPushButton:pressed{background:#e1eafa;}"
-            "QWidget#diaryWindow QPushButton:focus{border-color:#527cce;}"
-            "QWidget#diaryWindow QPushButton:checked{background:#eaf1ff;color:#285db5;}"
-            "QWidget#diaryWindow QPushButton#primaryButton{background:#3569c8;"
-            "color:#fff;border-color:#3569c8;}"
-            "QWidget#diaryWindow QPushButton#primaryButton:hover{background:#285bb8;}"
-            "QWidget#diaryWindow QSpinBox,QWidget#diaryWindow QComboBox{"
-            "background:#f7f9fc;color:#34415a;border:1px solid #e4e9f1;"
-            "border-radius:5px;padding:4px;}"
-        )
+        _apply_window_style(self)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 18, 20, 20)
-        outer.setSpacing(18)
-        title_row = QHBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        title_bar = QWidget()
+        title_bar.setObjectName("diaryHeader")
+        title_row = QHBoxLayout(title_bar)
+        title_row.setContentsMargins(28, 16, 24, 16)
         title = QLabel("工作日志")
-        title.setFont(QFont(BASE_FONT, 17, QFont.Bold))
+        title.setFont(QFont(BASE_FONT, 13, QFont.DemiBold))
         title_row.addWidget(title)
         title_row.addStretch(1)
         self.history_button = QPushButton("打开日历")
+        self.history_button.setProperty("variant", "quiet")
         self.history_button.setCheckable(True)
         self.history_button.setFixedHeight(34)
         self.history_button.clicked.connect(self.open_history)
         title_row.addWidget(self.history_button)
-        outer.addLayout(title_row)
+        outer.addWidget(title_bar)
 
         panels = QHBoxLayout()
-        panels.setSpacing(18)
+        panels.setSpacing(0)
         self._build_calendar_panel()
         panels.addWidget(self.calendar_panel)
         self.calendar_panel.hide()
@@ -362,25 +456,27 @@ class DiaryWindow(QWidget):
         outer.addLayout(panels, 1)
 
         root = QVBoxLayout(self.content_panel)
-        root.setContentsMargins(24, 22, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(32, 28, 32, 24)
+        root.setSpacing(12)
         header = QHBoxLayout()
-        self.date_label = QLabel(self.current_date)
-        self.date_label.setFont(QFont(BASE_FONT, 18, QFont.Bold))
+        self.date_label = QLabel("")
+        self.date_label.setFont(QFont(BASE_FONT, 20, QFont.DemiBold))
         header.addWidget(self.date_label)
         header.addStretch(1)
         self.status_label = QLabel("")
         self.status_label.setFont(QFont(BASE_FONT, 9))
-        self.status_label.setStyleSheet("color:#7b879a;")
+        self.status_label.setProperty("tone", "secondary")
         header.addWidget(self.status_label)
         root.addLayout(header)
         meta_row = QHBoxLayout()
         self.date_meta = QLabel("")
-        self.date_meta.setStyleSheet("color:#7b879a;")
+        self.date_meta.setFont(QFont(BASE_FONT, 9))
+        self.date_meta.setProperty("tone", "secondary")
         meta_row.addWidget(self.date_meta)
         meta_row.addStretch(1)
         self.weather_label = QLabel("")
-        self.weather_label.setStyleSheet(self.date_meta.styleSheet())
+        self.weather_label.setFont(QFont(BASE_FONT, 9))
+        self.weather_label.setProperty("tone", "secondary")
         self.weather_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.weather_label.setTextFormat(Qt.PlainText)
         self.weather_label.setAccessibleName("上海天气")
@@ -389,12 +485,12 @@ class DiaryWindow(QWidget):
             "随日志保存，不随回看更新；获取失败时，下次编辑重试。")
         meta_row.addWidget(self.weather_label)
         root.addLayout(meta_row)
+        root.addSpacing(12)
 
-        # ── 格式工具栏（仅编辑模式显示）──
         self.toolbar = QWidget()
-        self.toolbar.setStyleSheet("QPushButton{padding:0;}")
+        self.toolbar.setObjectName("formatToolbar")
         tb = QHBoxLayout(self.toolbar)
-        tb.setContentsMargins(0, 0, 0, 0)
+        tb.setContentsMargins(0, 0, 0, 8)
         tb.setSpacing(4)
 
         def tbtn(text, fn, bold=False, italic=False, strike=False, underline=False):
@@ -403,14 +499,15 @@ class DiaryWindow(QWidget):
             font.setStrikeOut(strike)
             font.setUnderline(underline)
             b.setFont(font)
-            b.setFixedHeight(26)
-            b.setFixedWidth(b.fontMetrics().horizontalAdvance(text) + 24)
+            b.setFixedHeight(30)
+            b.setFixedWidth(b.fontMetrics().horizontalAdvance(text) + 18)
+            b.setAccessibleName(text)
             b.clicked.connect(fn)
             tb.addWidget(b)
             return b
 
-        tbtn("B", lambda: self._wrap("**"), bold=True)
-        tbtn("I", lambda: self._wrap("*"), italic=True)
+        tbtn("B", lambda: self._wrap("**"), bold=True).setToolTip("加粗")
+        tbtn("I", lambda: self._wrap("*"), italic=True).setToolTip("斜体")
         tbtn("S", lambda: self._wrap("~~"), strike=True).setToolTip("删除线（~~文字~~）")
         tbtn("U", lambda: self._wrap("<u>", "</u>"), underline=True).setToolTip(
             "下划线（<u>文字</u>）")
@@ -432,17 +529,15 @@ class DiaryWindow(QWidget):
         self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setFont(QFont(BASE_FONT, BASE_SIZE))
-        self.preview.setStyleSheet("QTextEdit{background:#fff;border:0;}")
         self.preview.document().setDocumentMargin(2)
+        self.preview.setAccessibleName("日志正文")
         # 双击进入编辑模式：QTextEdit 的鼠标事件走内部 viewport，需装在 viewport 上
         self.preview.viewport().installEventFilter(self)
         self.stack.addWidget(self.preview)   # index 0 = 阅读
 
         self.editor = QPlainTextEdit()
         self.editor.setFont(QFont(BASE_FONT, BASE_SIZE))
-        self.editor.setStyleSheet(
-            "QPlainTextEdit{background:#fbfcff;color:#34415a;border:1px solid #dfe5ef;"
-            "border-radius:6px;padding:10px;}")
+        self.editor.setAccessibleName("编辑日志正文")
         self.editor.setPlaceholderText("记录这一天的工作，支持 Markdown 格式…")
         self.editor.textChanged.connect(self._update_save_status)
         self.stack.addWidget(self.editor)    # index 1 = 编辑
@@ -451,48 +546,59 @@ class DiaryWindow(QWidget):
         empty_layout = QVBoxLayout(self.empty_state)
         empty_layout.setSpacing(12)
         empty_layout.addStretch(1)
-        empty_title = QLabel("当天暂无日志")
+        empty_title = QLabel("这一天，还没有记录")
         empty_title.setFont(QFont(BASE_FONT, 16))
         empty_layout.addWidget(empty_title, 0, Qt.AlignCenter)
-        empty_hint = QLabel("从一条记录开始，留存这一天的工作。")
-        empty_hint.setStyleSheet("color:#8590a2;")
+        empty_hint = QLabel("从一件小事开始，留住今天的进展。")
+        empty_hint.setProperty("tone", "secondary")
         empty_layout.addWidget(empty_hint, 0, Qt.AlignCenter)
         self.write_button = QPushButton("写日志")
-        self.write_button.setObjectName("primaryButton")
-        self.write_button.setFixedSize(112, 36)
+        self.write_button.setProperty("variant", "primary")
+        self.write_button.setFixedSize(112, 38)
         self.write_button.clicked.connect(self.enter_edit_mode)
         empty_layout.addWidget(self.write_button, 0, Qt.AlignCenter)
         empty_layout.addStretch(1)
         self.stack.addWidget(self.empty_state)
         root.addWidget(self.stack, 1)
 
-        btns = QHBoxLayout()
+        footer = QWidget()
+        footer.setObjectName("diaryFooter")
+        btns = QHBoxLayout(footer)
+        btns.setContentsMargins(0, 16, 0, 0)
+        btns.setSpacing(8)
+        self.document_hint = QLabel("")
+        self.document_hint.setObjectName("documentHint")
+        self.document_hint.setProperty("tone", "secondary")
+        self.document_hint.setFont(QFont(BASE_FONT, 9))
+        btns.addWidget(self.document_hint)
+        btns.addStretch(1)
 
         def button(text, fn):
             b = QPushButton(text)
             b.setFont(QFont(BASE_FONT, 10))
-            b.setFixedHeight(34)
+            b.setFixedHeight(38)
             b.clicked.connect(fn)
             btns.addWidget(b)
             return b
 
-        button("保存", self.save)
-        button("保存并关闭", self.save_and_close)
-        btns.addStretch(1)
-        self.toggle_btn = button("编辑", self.toggle_mode)
-        self.toggle_btn.setObjectName("primaryButton")
-        root.addLayout(btns)
+        self.save_button = button("保存", self.save)
+        self.save_button.setProperty("variant", "quiet")
+        self.save_close_button = button("保存并关闭", self.save_and_close)
+        self.save_close_button.setProperty("variant", "quiet")
+        self.toggle_btn = button("编辑日志", self.toggle_mode)
+        self.toggle_btn.setProperty("variant", "primary")
+        root.addWidget(footer)
 
     def _build_calendar_panel(self):
         self.calendar_panel = QWidget()
         self.calendar_panel.setObjectName("calendarPanel")
-        self.calendar_panel.setFixedWidth(332)
+        self.calendar_panel.setFixedWidth(316)
         layout = QVBoxLayout(self.calendar_panel)
         layout.setContentsMargins(18, 20, 18, 20)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
         title_row = QHBoxLayout()
         title = QLabel("日志日历")
-        title.setFont(QFont(BASE_FONT, 12, QFont.Bold))
+        title.setFont(QFont(BASE_FONT, 10, QFont.DemiBold))
         title_row.addWidget(title)
         title_row.addStretch(1)
         self.today_button = QPushButton("今天")
@@ -508,7 +614,7 @@ class DiaryWindow(QWidget):
         self.year_select.setSuffix(" 年")
         self.year_select.setKeyboardTracking(False)
         self.year_select.setAccessibleName("年份")
-        self.year_select.setFixedWidth(106)
+        self.year_select.setFixedWidth(100)
         navigation.addWidget(self.year_select)
         self.month_select = QComboBox()
         self.month_select.addItems([f"{month} 月" for month in range(1, 13)])
@@ -529,17 +635,27 @@ class DiaryWindow(QWidget):
 
         self.calendar = DiaryCalendar()
         layout.addWidget(self.calendar)
-        legend = QLabel('<span style="color:#527cce;">●</span> 已记录日志'
-                        '&nbsp;&nbsp;&nbsp; 描边为今天')
-        legend.setStyleSheet("color:#7b879a;font-size:12px;")
+        legend = QLabel("· 有日志    描边为今天")
+        legend.setProperty("tone", "secondary")
+        legend.setFont(QFont(BASE_FONT, 9))
         layout.addWidget(legend)
         self.month_summary = QLabel("")
-        self.month_summary.setStyleSheet(
-            "color:#64748b;background:#f5f7fb;border-radius:6px;padding:12px;")
+        self.month_summary.setProperty("tone", "secondary")
+        self.month_summary.setFont(QFont(BASE_FONT, 9))
+        self.month_summary.setContentsMargins(0, 12, 0, 0)
         layout.addWidget(self.month_summary)
+        self.recent_notes = QListWidget()
+        self.recent_notes.setObjectName("recentNotes")
+        self.recent_notes.setAccessibleName("本月日志记录")
+        self.recent_notes.setFont(QFont(BASE_FONT, 10))
+        self.recent_notes.setFixedHeight(112)
+        self.recent_notes.itemClicked.connect(self._open_recent_note)
+        self.recent_notes.itemActivated.connect(self._open_recent_note)
+        layout.addWidget(self.recent_notes)
         layout.addStretch(1)
-        hint = QLabel("单击日期查看或补写日志\n切换日期时自动保存修改")
-        hint.setStyleSheet("color:#8a95a6;font-size:12px;")
+        hint = QLabel("点选日期，回看或补写日志。\n切换日期时，自动保存修改。")
+        hint.setProperty("tone", "secondary")
+        hint.setFont(QFont(BASE_FONT, 9))
         layout.addWidget(hint)
 
         self.previous_month_button.clicked.connect(self.calendar.showPreviousMonth)
@@ -576,13 +692,27 @@ class DiaryWindow(QWidget):
         self.preview.setHtml(md_to_html(content))
         self.stack.setCurrentWidget(self.preview if content.strip() else self.empty_state)
         self.toolbar.hide()
-        self.toggle_btn.setText("编辑" if content.strip() else "写日志")
+        self.save_button.hide()
+        self.save_close_button.hide()
+        self.toggle_btn.setText("编辑日志" if content.strip() else "写日志")
+        self.toggle_btn.setProperty("variant", "primary" if content.strip() else "quiet")
+        self.toggle_btn.style().unpolish(self.toggle_btn)
+        self.toggle_btn.style().polish(self.toggle_btn)
+        count = len("".join(content.split()))
+        self.document_hint.setText(f"{count} 字 · 双击正文编辑" if content.strip()
+                                   else "每一天，都值得被记住。")
         self.mode = "read"
 
     def enter_edit_mode(self):
         self.stack.setCurrentIndex(1)
         self.toolbar.show()
+        self.save_button.show()
+        self.save_close_button.show()
         self.toggle_btn.setText("保存并返回")
+        self.toggle_btn.setProperty("variant", "primary")
+        self.toggle_btn.style().unpolish(self.toggle_btn)
+        self.toggle_btn.style().polish(self.toggle_btn)
+        self.document_hint.setText("支持 Markdown")
         self.mode = "edit"
         self.editor.setFocus()
         if not self._weather and self.current_date == QDate.currentDate().toString("yyyy-MM-dd"):
@@ -671,8 +801,9 @@ class DiaryWindow(QWidget):
         self.weather_label.setText(self._weather)
         self.editor.setPlainText(self._saved_content)
         date = QDate.fromString(d, "yyyy-MM-dd")
-        self.date_label.setText(date.toString("yyyy年M月d日"))
-        self.date_meta.setText(QLocale(QLocale.Chinese, QLocale.China).toString(date, "dddd"))
+        self.date_label.setText(date.toString("M 月 d 日"))
+        weekday = QLocale(QLocale.Chinese, QLocale.China).toString(date, "dddd")
+        self.date_meta.setText(f"{weekday} · {date.year()} 年")
         self.setWindowTitle(f"工作日志 — {d}")
         self._update_save_status()
         self._sync_calendar_selection()
@@ -714,9 +845,25 @@ class DiaryWindow(QWidget):
             self.month_select.setCurrentIndex(month - 1)
         self.previous_month_button.setEnabled((year, month) > (1900, 1))
         self.next_month_button.setEnabled((year, month) < (9999, 12))
-        count = sum(date.year() == year and date.month() == month
-                    for date in self.calendar.recorded_dates)
-        self.month_summary.setText(f"本月已记录 {count} 天")
+        dates = sorted((date for date in self.calendar.recorded_dates
+                        if date.year() == year and date.month() == month), reverse=True)
+        self.month_summary.setText(f"本月已记录 {len(dates)} 天")
+        scroll_position = self.recent_notes.verticalScrollBar().value()
+        with QSignalBlocker(self.recent_notes):
+            self.recent_notes.clear()
+            for date in dates:
+                weekday = QLocale(QLocale.Chinese, QLocale.China).toString(date, "ddd")
+                item = QListWidgetItem(f"{date.toString('M 月 d 日')}  ·  {weekday}")
+                item.setData(Qt.UserRole, date.toString("yyyy-MM-dd"))
+                self.recent_notes.addItem(item)
+                if item.data(Qt.UserRole) == self.current_date:
+                    self.recent_notes.setCurrentItem(item)
+        self.recent_notes.verticalScrollBar().setValue(scroll_position)
+
+    def _open_recent_note(self, item):
+        date = item.data(Qt.UserRole)
+        if date != self.current_date:
+            self.load_date(date)
 
     def _jump_month(self):
         self.calendar.setCurrentPage(self.year_select.value(),
@@ -765,74 +912,138 @@ class TodoEditorWindow(QWidget):
         self.refresh_list()
 
     def _build_ui(self):
-        self.setWindowTitle("编辑待办")
-        self.resize(560, 480)
+        self.setWindowTitle("待办清单")
+        self.setObjectName("todoWindow")
+        self.resize(680, 620)
+        self.setMinimumSize(440, 420)
+        _apply_window_style(self)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 14, 18, 14)
-        root.setSpacing(8)
+        root.setContentsMargins(28, 24, 28, 20)
+        root.setSpacing(12)
+        title_row = QHBoxLayout()
+        title = QLabel("待办清单")
+        title.setFont(QFont(BASE_FONT, 20, QFont.DemiBold))
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        self.summary = QLabel("")
+        self.summary.setObjectName("todoSummary")
+        self.summary.setProperty("tone", "secondary")
+        self.summary.setFont(QFont(BASE_FONT, 9))
+        root.addLayout(title_row)
+        root.addWidget(self.summary)
+        root.addSpacing(4)
 
+        navigation = QWidget()
+        navigation.setObjectName("todoNavigation")
+        nav = QHBoxLayout(navigation)
+        nav.setContentsMargins(0, 0, 0, 0)
         self.tabs = QTabBar()
-        self.tabs.setFont(QFont(BASE_FONT, 11))
+        self.tabs.setFont(QFont(BASE_FONT, 10))
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
         self.tabs.addTab("待办")
         self.tabs.addTab("已归档")
-        root.addWidget(self.tabs)
+        nav.addWidget(self.tabs)
+        nav.addStretch(1)
+        self.delete_button = QPushButton("删除")
+        self.delete_button.setProperty("variant", "quiet")
+        self.delete_button.setFixedHeight(32)
+        self.delete_button.setToolTip("删除选中的事项")
+        self.delete_button.setEnabled(False)
+        self.delete_button.clicked.connect(self.delete_selected)
+        nav.addWidget(self.delete_button)
+        root.addWidget(navigation)
 
+        self.content_stack = QStackedWidget()
         self.list = QListWidget()
         self.list.setFont(QFont(BASE_FONT, 12))
-        root.addWidget(self.list, 1)
-
-        ops = QHBoxLayout()
-        delete_button = QPushButton("删除")
-        delete_button.setFont(QFont(BASE_FONT, 10))
-        delete_button.setFixedHeight(30)
-        delete_button.clicked.connect(self.delete_selected)
-        ops.addWidget(delete_button)
-        ops.addStretch(1)
-        root.addLayout(ops)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list.itemSelectionChanged.connect(
+            lambda: self.delete_button.setEnabled(bool(self.list.selectedItems())))
+        self.content_stack.addWidget(self.list)
+        self.empty_state = QWidget()
+        empty = QVBoxLayout(self.empty_state)
+        empty.setSpacing(10)
+        empty.addStretch(1)
+        self.empty_title = QLabel("")
+        self.empty_title.setObjectName("todoEmptyTitle")
+        self.empty_title.setFont(QFont(BASE_FONT, 15))
+        empty.addWidget(self.empty_title, 0, Qt.AlignCenter)
+        self.empty_hint = QLabel("")
+        self.empty_hint.setProperty("tone", "secondary")
+        self.empty_hint.setWordWrap(True)
+        self.empty_hint.setAlignment(Qt.AlignCenter)
+        empty.addWidget(self.empty_hint)
+        empty.addStretch(1)
+        self.content_stack.addWidget(self.empty_state)
+        root.addWidget(self.content_stack, 1)
 
         self.add_controls = QWidget()
+        self.add_controls.setObjectName("todoInput")
         add_row = QHBoxLayout(self.add_controls)
-        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setContentsMargins(10, 8, 8, 8)
+        add_row.setSpacing(8)
         self.entry = QLineEdit()
-        self.entry.setFont(QFont(BASE_FONT, 12))
-        self.entry.setPlaceholderText("输入新待办，回车添加…")
+        self.entry.setObjectName("todoEntry")
+        self.entry.setFont(QFont(BASE_FONT, 11))
+        self.entry.setAccessibleName("新待办内容")
+        self.entry.setPlaceholderText("添加一件要做的事…")
         self.entry.returnPressed.connect(self.add_todo)
         add_row.addWidget(self.entry, 1)
 
         ab = QPushButton("添加")
-        ab.setFont(QFont(BASE_FONT, 10))
-        ab.setFixedHeight(30)
-        ab.setStyleSheet("QPushButton{background:#1976D2;color:#fff;"
-                         "border:none;border-radius:5px;padding:0 16px;}")
+        ab.setObjectName("addTodo")
+        ab.setProperty("variant", "primary")
+        ab.setFixedHeight(36)
         ab.clicked.connect(self.add_todo)
         add_row.addWidget(ab)
         root.addWidget(self.add_controls)
+        self.input_hint = QLabel("")
+        self.input_hint.setProperty("tone", "secondary")
+        self.input_hint.setFont(QFont(BASE_FONT, 9))
+        self.input_hint.setWordWrap(True)
+        root.addWidget(self.input_hint)
         self.tabs.currentChanged.connect(self.refresh_list)
 
     def _rows(self):
         return self.db.get_todos(archived=self.tabs.currentIndex() == 1)
 
     def refresh_list(self):
-        current = self.list.currentItem()
-        selected_id = current.data(Qt.UserRole) if current else None
+        selected = self.list.selectedItems()
+        selected_id = selected[0].data(Qt.UserRole) if selected else None
+        focused = self.focusWidget()
+        focused_id = focused.property("todoId") if isinstance(focused, QCheckBox) else None
         scroll_position = self.list.verticalScrollBar().value()
         archived = self.tabs.currentIndex() == 1
         self.add_controls.setVisible(not archived)
+        rows = self._rows()
+        completed = sum(bool(row["done"]) for row in rows)
+        self.summary.setText(f"已归档 {len(rows)} 件 · 可随时恢复" if archived else
+                             f"{len(rows) - completed} 件待完成 · {completed} 件已完成")
+        self.empty_title.setText("还没有归档事项" if archived else "清单很干净")
+        self.empty_hint.setText("已完成的事项归档后，会留在这里。" if archived else
+                                "在下方记下下一件要做的事。")
+        self.input_hint.setText("已归档事项会保留，可随时恢复到待办列表。" if archived else
+                                "回车添加 · 完成的事项可以归档，随时回看")
         self.list.clear()
-        for r in self._rows():
+        self.content_stack.setCurrentWidget(self.list if rows else self.empty_state)
+        for r in rows:
             item = QListWidgetItem()
             item.setData(Qt.UserRole, r["id"])
             item.setData(Qt.AccessibleTextRole, r["text"])
             self.list.addItem(item)
 
             row = QWidget()
+            row.setObjectName("todoRow")
             row.setFont(self.list.font())
             layout = QHBoxLayout(row)
-            layout.setContentsMargins(10, 10, 10, 10)
+            layout.setContentsMargins(6, 14, 6, 14)
             layout.setSpacing(10)
 
-            checkbox = QCheckBox()
+            checkbox = TodoCheckBox()
+            checkbox.setProperty("todoId", r["id"])
             checkbox.setAccessibleName(r["text"])
             checkbox.setChecked(bool(r["done"]))
             checkbox.setEnabled(not archived)
@@ -852,10 +1063,12 @@ class TodoEditorWindow(QWidget):
             font = QFont(self.list.font())
             font.setStrikeOut(bool(r["done"]))
             label.setFont(font)
+            if r["done"]:
+                label.setProperty("tone", "secondary")
             text_layout.addWidget(label)
 
             created_label = QLabel(f"创建于 {r['created_at'][:16]}")
-            created_label.setFont(QFont(BASE_FONT, 10))
+            created_label.setFont(QFont(BASE_FONT, 9))
             created_label.setAttribute(Qt.WA_TransparentForMouseEvents)
             secondary_color = self.list.palette().color(QPalette.Text)
             secondary_color.setAlphaF(0.65)
@@ -868,8 +1081,9 @@ class TodoEditorWindow(QWidget):
             if archived or r["done"]:
                 action = self._restore_todo if archived else self._archive_todo
                 button = QPushButton("恢复" if archived else "归档")
+                button.setProperty("variant", "quiet")
                 button.setFont(QFont(BASE_FONT, 10))
-                button.setFixedHeight(30)
+                button.setFixedHeight(32)
                 button.clicked.connect(
                     lambda checked=False, tid=r["id"], fn=action: fn(tid)
                 )
@@ -879,7 +1093,10 @@ class TodoEditorWindow(QWidget):
             self.list.setItemWidget(item, row)
             if r["id"] == selected_id:
                 self.list.setCurrentItem(item)
+            if r["id"] == focused_id:
+                checkbox.setFocus(Qt.OtherFocusReason)
         self.list.verticalScrollBar().setValue(scroll_position)
+        self.delete_button.setEnabled(bool(self.list.selectedItems()))
 
     def _notify(self):
         if self.on_changed:
@@ -901,9 +1118,9 @@ class TodoEditorWindow(QWidget):
         self._notify()
 
     def delete_selected(self):
-        item = self.list.currentItem()
-        if item is not None:
-            self.db.delete_todo(item.data(Qt.UserRole))
+        selected = self.list.selectedItems()
+        if selected:
+            self.db.delete_todo(selected[0].data(Qt.UserRole))
             self.refresh_list()
             self._notify()
 
