@@ -202,5 +202,77 @@ class DiaryDatesTests(unittest.TestCase):
                          "# 闰日\n\n完整正文")
 
 
+class DiaryWeatherTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = Path(self.temp_dir.name) / "weather.db"
+        self.db = Database(self.db_path)
+        self.addCleanup(lambda: self.db.close())
+        self.weather = "上海 · 多云 · 24.4°C"
+
+    def test_weather_snapshot_survives_content_edits_and_reopening(self):
+        self.assertIn("weather", self.db.get_daily_note("2026-10-12"))
+        self.db.save_daily_note("2026-10-12", "第一稿", self.weather)
+        self.db.save_daily_note("2026-10-12", "修改后的正文")
+        self.db.close()
+        self.db = Database(self.db_path)
+        note = self.db.get_daily_note("2026-10-12")
+        self.assertEqual(note["weather"], self.weather)
+        self.assertEqual(note["content"], "修改后的正文")
+
+    def test_first_saved_snapshot_is_not_overwritten(self):
+        self.assertIn("weather", self.db.get_daily_note("2026-10-12"))
+        self.db.save_daily_note("2026-10-12", "原文", self.weather)
+        self.db.save_daily_note("2026-10-12", "新正文", "上海 · 晴 · 28°C")
+        self.assertEqual(self.db.save_daily_note_weather(
+            "2026-10-12", "上海 · 雨 · 20°C"), self.weather)
+        self.assertEqual(self.db.get_daily_note("2026-10-12")["weather"], self.weather)
+        self.assertEqual(self.db.get_daily_note("2026-10-12")["content"], "新正文")
+
+    def test_late_weather_updates_only_metadata(self):
+        self.db.save_daily_note("2026-10-12", "已经保存的正文")
+        self.assertIn("weather", self.db.get_daily_note("2026-10-12"))
+        self.assertEqual(self.db.save_daily_note_weather(
+            "2026-10-12", self.weather), self.weather)
+        self.assertEqual(self.db.get_daily_note("2026-10-12")["content"], "已经保存的正文")
+        self.assertEqual(self.db.get_daily_note("2026-10-12")["weather"], self.weather)
+
+    def test_weather_alone_never_creates_a_note_or_calendar_marker(self):
+        self.assertIn("weather", self.db.get_daily_note("2026-10-12"))
+        self.assertEqual(self.db.save_daily_note_weather("2026-10-12", self.weather), "")
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM daily_notes").fetchone()[0], 0)
+        self.db.save_daily_note("2026-10-11", " \n\t\u3000")
+        self.assertEqual(self.db.save_daily_note_weather("2026-10-11", self.weather), "")
+        self.assertEqual(self.db.get_daily_note("2026-10-11")["weather"], "")
+        self.assertEqual(self.db.get_all_note_dates(), [])
+
+    def test_legacy_diary_migration_preserves_every_existing_field(self):
+        self.db.close()
+        legacy_path = Path(self.temp_dir.name) / "legacy-diary.db"
+        with closing(sqlite3.connect(legacy_path)) as conn:
+            conn.executescript("""
+                CREATE TABLE daily_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date TEXT NOT NULL UNIQUE,
+                    content TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+                );
+                INSERT INTO daily_notes (date, content)
+                VALUES ('2026-10-01', '# 历史正文');
+            """)
+            conn.row_factory = sqlite3.Row
+            original = dict(conn.execute("SELECT * FROM daily_notes").fetchone())
+        self.db = Database(legacy_path)
+        note = self.db.get_daily_note("2026-10-01")
+        self.assertIn("weather", note)
+        self.assertEqual(note.pop("weather"), "")
+        self.assertEqual(note, original)
+        self.db.close()
+        self.db = Database(legacy_path)
+        self.assertEqual(self.db.get_daily_note("2026-10-01")["weather"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

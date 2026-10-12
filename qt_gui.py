@@ -10,6 +10,8 @@
 """
 
 import html as _html
+import json
+import math
 import queue
 import re
 import sqlite3
@@ -17,8 +19,11 @@ import threading
 from datetime import datetime
 
 import shiboken6
-from PySide6.QtCore import QDate, QLocale, QPointF, QRectF, QSignalBlocker, QTimer, Qt
+from PySide6.QtCore import (
+    QDate, QLocale, QObject, QPointF, QRectF, QSignalBlocker, QTimer, Qt, QUrl, Signal,
+)
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen, QTextCharFormat, QTextCursor
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QTextEdit, QPlainTextEdit, QListWidget,
@@ -225,6 +230,66 @@ class DiaryCalendar(QCalendarWidget):
         painter.restore()
 
 
+class ShanghaiWeather(QObject):
+    ready = Signal(str, str)
+    failed = Signal(str)
+    TIMEOUT_MS = 10000
+    CONDITIONS = {
+        0: "晴", 1: "晴间多云", 2: "多云", 3: "阴", 45: "雾", 48: "雾凇",
+        51: "小毛毛雨", 53: "毛毛雨", 55: "强毛毛雨", 56: "冻毛毛雨", 57: "强冻毛毛雨",
+        61: "小雨", 63: "中雨", 65: "大雨", 66: "冻雨", 67: "强冻雨",
+        71: "小雪", 73: "中雪", 75: "大雪", 77: "米雪",
+        80: "小阵雨", 81: "阵雨", 82: "强阵雨", 85: "小阵雪", 86: "强阵雪",
+        95: "雷阵雨", 96: "雷阵雨伴冰雹", 99: "雷阵雨伴冰雹",
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.manager = QNetworkAccessManager(self)
+        self._pending = {}
+
+    def fetch(self, date):
+        if date in self._pending:
+            return
+        request = QNetworkRequest(QUrl(
+            "https://api.open-meteo.com/v1/forecast?latitude=31.2304&longitude=121.4737"
+            "&current=temperature_2m,weather_code&timezone=Asia%2FShanghai"
+        ))
+        reply = self.manager.get(request)
+        self._pending[date] = reply
+        timeout = QTimer(reply)
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(reply.abort)
+        reply.finished.connect(timeout.stop)
+        reply.finished.connect(lambda: self._finish(date, reply))
+        timeout.start(self.TIMEOUT_MS)
+
+    def _finish(self, date, reply):
+        self._pending.pop(date, None)
+        try:
+            if reply.error() != QNetworkReply.NoError:
+                self.failed.emit(date)
+                return
+            try:
+                data = json.loads(bytes(reply.readAll()))
+                current = data["current"]
+                temperature = current["temperature_2m"]
+                code = current["weather_code"]
+                if (data["timezone"] != "Asia/Shanghai"
+                        or data["current_units"]["temperature_2m"] != "°C"
+                        or datetime.fromisoformat(current["time"]).date().isoformat() != date
+                        or type(temperature) not in (int, float) or not math.isfinite(temperature)
+                        or type(code) is not int):
+                    raise ValueError("天气数据不符合请求日期或单位")
+                weather = f"上海 · {self.CONDITIONS[code]} · {temperature:g}°C"
+            except (KeyError, TypeError, ValueError, OverflowError):
+                self.failed.emit(date)
+                return
+            self.ready.emit(date, weather)
+        finally:
+            reply.deleteLater()
+
+
 class DiaryWindow(QWidget):
     """工作日志：默认阅读模式（Markdown 渲染），点"编辑"进入编辑模式。"""
 
@@ -234,6 +299,12 @@ class DiaryWindow(QWidget):
         self.on_saved = on_saved
         self.current_date = datetime.now().strftime("%Y-%m-%d")
         self._saved_content = ""
+        self._weather = ""
+        self._saved_weather = ""
+        self._weather_cache = {}
+        self.weather_client = ShanghaiWeather(self)
+        self.weather_client.ready.connect(self._weather_ready)
+        self.weather_client.failed.connect(self._weather_failed)
         self.mode = "read"
         self._closed = False
         self._build_ui()
@@ -303,9 +374,21 @@ class DiaryWindow(QWidget):
         self.status_label.setStyleSheet("color:#7b879a;")
         header.addWidget(self.status_label)
         root.addLayout(header)
+        meta_row = QHBoxLayout()
         self.date_meta = QLabel("")
         self.date_meta.setStyleSheet("color:#7b879a;")
-        root.addWidget(self.date_meta)
+        meta_row.addWidget(self.date_meta)
+        meta_row.addStretch(1)
+        self.weather_label = QLabel("")
+        self.weather_label.setStyleSheet(self.date_meta.styleSheet())
+        self.weather_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.weather_label.setTextFormat(Qt.PlainText)
+        self.weather_label.setAccessibleName("上海天气")
+        self.weather_label.setToolTip(
+            "数据来源：Open-Meteo（上海市区参考天气）\n"
+            "随日志保存，不随回看更新；获取失败时，下次编辑重试。")
+        meta_row.addWidget(self.weather_label)
+        root.addLayout(meta_row)
 
         # ── 格式工具栏（仅编辑模式显示）──
         self.toolbar = QWidget()
@@ -502,6 +585,29 @@ class DiaryWindow(QWidget):
         self.toggle_btn.setText("保存并返回")
         self.mode = "edit"
         self.editor.setFocus()
+        if not self._weather and self.current_date == QDate.currentDate().toString("yyyy-MM-dd"):
+            self.weather_label.setText("上海 · 获取天气中…")
+            self.weather_client.fetch(self.current_date)
+
+    def _weather_ready(self, date, weather):
+        saved_weather = ""
+        try:
+            # 请求返回时正文可能已保存或已切换日期，只补充天气，不能覆盖正文。
+            saved_weather = self.db.save_daily_note_weather(date, weather)
+        except sqlite3.Error as exc:
+            print(f"[天气] 天气暂未保存: {exc}")
+        weather = saved_weather or weather
+        self._weather_cache[date] = weather
+        if date == self.current_date:
+            self._weather = weather
+            if saved_weather:
+                self._saved_weather = saved_weather
+            self.weather_label.setText(weather)
+            self._update_save_status()
+
+    def _weather_failed(self, date):
+        if date == self.current_date and not self._weather:
+            self.weather_label.setText("上海 · 天气暂不可用")
 
     def toggle_mode(self):
         if self.mode == "read":
@@ -511,21 +617,25 @@ class DiaryWindow(QWidget):
 
     def _update_save_status(self):
         content = self.editor.toPlainText()
-        if content != self._saved_content:
+        if (content != self._saved_content
+                or (content.strip() and self._weather != self._saved_weather)):
             self.status_label.setText("未保存")
         else:
             self.status_label.setText("已保存" if content.strip() else "暂无记录")
 
     def save(self):
         content = self.editor.toPlainText()
-        if content == self._saved_content:
+        if (content == self._saved_content
+                and (not content.strip() or self._weather == self._saved_weather)):
             return True
         try:
-            self.db.save_daily_note(self.current_date, content)
+            self.db.save_daily_note(self.current_date, content, self._weather)
         except sqlite3.Error as exc:
             QMessageBox.warning(self, "日志未保存", f"保存失败，内容仍保留在编辑器中。\n{exc}")
             return False
         self._saved_content = content
+        if content.strip():
+            self._saved_weather = self._weather
         self._update_save_status()
         dates = set(self.calendar.recorded_dates)
         date = QDate.fromString(self.current_date, "yyyy-MM-dd")
@@ -556,6 +666,9 @@ class DiaryWindow(QWidget):
             return False
         self.current_date = d
         self._saved_content = note.get("content", "")
+        self._saved_weather = note.get("weather", "")
+        self._weather = self._saved_weather or self._weather_cache.get(d, "")
+        self.weather_label.setText(self._weather)
         self.editor.setPlainText(self._saved_content)
         date = QDate.fromString(d, "yyyy-MM-dd")
         self.date_label.setText(date.toString("yyyy年M月d日"))

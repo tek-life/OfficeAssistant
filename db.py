@@ -52,6 +52,7 @@ class Database:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 date       TEXT    NOT NULL UNIQUE,
                 content    TEXT    NOT NULL DEFAULT '',
+                weather    TEXT    NOT NULL DEFAULT '',
                 created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -65,6 +66,9 @@ class Database:
         columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(todos)")}
         if "archived_at" not in columns:
             self.conn.execute("ALTER TABLE todos ADD COLUMN archived_at TEXT")
+        note_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(daily_notes)")}
+        if "weather" not in note_columns:
+            self.conn.execute("ALTER TABLE daily_notes ADD COLUMN weather TEXT NOT NULL DEFAULT ''")
         self.conn.commit()
 
     # ── Todos CRUD ──────────────────────────────────────────
@@ -166,17 +170,31 @@ class Database:
         row = self.conn.execute(
             "SELECT * FROM daily_notes WHERE date=?", (date_str,)
         ).fetchone()
-        return dict(row) if row else {"date": date_str, "content": ""}
+        return dict(row) if row else {"date": date_str, "content": "", "weather": ""}
 
-    def save_daily_note(self, date_str: str, content: str):
+    def save_daily_note(self, date_str: str, content: str, weather: str = ""):
         """保存日志内容（upsert）。"""
         self.conn.execute(
-            "INSERT INTO daily_notes (date, content) VALUES (?, ?) "
+            "INSERT INTO daily_notes (date, content, weather) VALUES (?, ?, ?) "
             "ON CONFLICT(date) DO UPDATE SET content=excluded.content, "
-            "updated_at=datetime('now','localtime')",
-            (date_str, content),
+            "weather=CASE WHEN daily_notes.weather='' THEN excluded.weather "
+            "ELSE daily_notes.weather END, updated_at=datetime('now','localtime')",
+            (date_str, content, weather if content.strip() else ""),
         )
         self.conn.commit()
+
+    def save_daily_note_weather(self, date_str: str, weather: str) -> str:
+        note = self.get_daily_note(date_str)
+        if not note["content"].strip():
+            return ""
+        if note["weather"]:
+            return note["weather"]
+        self.conn.execute(
+            "UPDATE daily_notes SET weather=? WHERE date=? AND weather=''",
+            (weather, date_str),
+        )
+        self.conn.commit()
+        return weather
 
     def get_all_note_dates(self) -> list:
         rows = self.conn.execute(

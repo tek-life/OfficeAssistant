@@ -2,6 +2,7 @@ import html
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import shiboken6
 from PySide6.QtCore import Qt
@@ -90,6 +91,9 @@ class DiaryWindowTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = Database(Path(self.temp_dir.name) / "test.db")
         self.window = DiaryWindow(self.db)
+        fetch_patch = patch.object(self.window.weather_client, "fetch")
+        fetch_patch.start()
+        self.addCleanup(fetch_patch.stop)
         self.window.load_date("2026-10-09")
         self.window.show()
         self.app.processEvents()

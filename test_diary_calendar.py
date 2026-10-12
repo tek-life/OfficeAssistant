@@ -24,6 +24,9 @@ class DiaryCalendarTests(unittest.TestCase):
         self.db = Database(Path(self.temp_dir.name) / "diary.db")
         self.notifications = 0
         self.window = DiaryWindow(self.db, on_saved=self.on_saved)
+        fetch_patch = patch.object(self.window.weather_client, "fetch")
+        fetch_patch.start()
+        self.addCleanup(fetch_patch.stop)
         self.window.load_date("2026-10-09")
         self.window.show()
         self.app.processEvents()
