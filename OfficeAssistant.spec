@@ -1,8 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
+from pathlib import Path
 
 
-# 只打包运行时真正用到的依赖：排除未使用的 Qt 模块，
-# 以及 matplotlib/numpy 等重依赖，避免它们带入额外的 VC 运行时 DLL、污染打包环境与体积。
+# 打包时只保留 Python 环境与系统目录中的二进制（见下方过滤），
+# 未使用的 Qt 模块与 numpy/matplotlib 等无关大件已在 excludes 中排除。
+
 a = Analysis(
     ['src/sticky_wallpaper.py'],
     pathex=['src'],
@@ -18,6 +22,30 @@ a = Analysis(
     optimize=0,
 )
 pyz = PYZ(a.pure)
+
+# 只保留来自 Python 环境或系统目录的二进制，丢弃 PATH 上其它软件（如 PDF 工具链）
+# 顺带捎来的同名 DLL；例如 poppler 的 icuuc.dll 会遮蔽系统 ICU，导致 Qt 加载失败。
+_PY_PREFIX = Path(sys.prefix).resolve()
+_SYS32 = Path(os.environ.get('SystemRoot', 'C:/Windows')).resolve() / 'System32'
+
+
+def _binary_is_local(entry):
+    try:
+        src = Path(entry[1]).resolve()
+    except Exception:
+        return True
+    for root in (_PY_PREFIX, _SYS32):
+        try:
+            src.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+for _entry in [e for e in a.binaries if not _binary_is_local(e)]:
+    print('excluded foreign binary:', _entry[0], '<-', _entry[1])
+a.binaries = [e for e in a.binaries if _binary_is_local(e)]
 
 exe = EXE(
     pyz,

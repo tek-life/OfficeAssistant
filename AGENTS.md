@@ -217,6 +217,7 @@ Uses `accent_rgb + (220,)` color. Header height dynamically increases +24px when
 - **Pillow for rendering**: All drawing done via PIL/Pillow (no Cairo, no HTML rendering).
 - **tkinter for dialogs**: Pomodoro break/choice dialogs use tkinter (bundled with Python, no extra dependency).
 - **PyInstaller packaging**: `src/sticky_wallpaper.py` derives `BASE_DIR` from `sys.frozen` (exe directory when frozen, project root when run from source); data is written to `db/`, settings to the SQLite `app_settings` table.
+- **Frozen DLL hygiene**: `OfficeAssistant.spec` keeps only binaries whose source lives under `sys.prefix` or `System32`. If a foreign toolchain on `PATH` ships a DLL name Qt resolves (for example poppler's `icuuc.dll`), PyInstaller's dependency walker bundles that copy, it shadows the system ICU, and the frozen app dies with `ImportError: DLL load failed while importing QtCore`. Do not remove the filter.
 - **BMP output**: Wallpaper saved as BMP for maximum Windows compatibility.
 
 ## Code Conventions
