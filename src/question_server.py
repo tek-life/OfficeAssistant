@@ -46,16 +46,19 @@ def build_jump_url(url: str, anchor=None) -> str:
     """在原文链接后附加高亮锚点，供扩展定位并高亮。
 
     url 已有片段（如路由锚点）时用 & 追加，避免覆盖；没有锚点时原样返回。
+
+    片段里若已经带着上一次回跳留下的 oaq=，先丢掉再追加：同一篇文章会被反复标记，
+    残留的旧锚点会让回跳永远命中第一次的位置。
     """
     base = (url or "").strip()
     token = encode_anchor(anchor)
     if not base or not token:
         return base
     split = urlsplit(base)
-    fragment = f"oaq={token}"
-    if split.fragment:
-        fragment = f"{split.fragment}&{fragment}"
-    return split._replace(fragment=fragment).geturl()
+    kept = [part for part in split.fragment.split("&")
+            if part and not part.startswith("oaq=")]
+    kept.append(f"oaq={token}")
+    return split._replace(fragment="&".join(kept)).geturl()
 
 
 class QuestionServer:

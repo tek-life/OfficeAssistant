@@ -50,10 +50,21 @@
     return (text || "").replace(/\s+/g, " ").trim();
   }
 
+  // 回跳链接会在片段里追加 oaq= 锚点：采集时必须剥掉这一段，
+  // 否则在跳转打开的文章里继续标记，新疑难会继承上一次的锚点。
+  function pageUrl() {
+    const { href, hash } = location;
+    if (!hash) return href;
+    const kept = hash.replace(/^#/, "").split("&")
+      .filter((part) => part && part.indexOf("oaq=") !== 0);
+    const head = href.slice(0, href.length - hash.length);
+    return kept.length ? `${head}#${kept.join("&")}` : head;
+  }
+
   function buildPayload() {
     const sel = window.getSelection();
     const quote = sel ? sel.toString().trim() : "";
-    const payload = { url: location.href, title: document.title, quote, anchor: null };
+    const payload = { url: pageUrl(), title: document.title, quote, anchor: null };
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !quote) return payload;
     const range = sel.getRangeAt(0);
     const { nodes, text } = collectTextNodes();
@@ -83,12 +94,10 @@
   function anchorFromHash() {
     const hash = location.hash.replace(/^#/, "");
     if (!hash) return null;
+    // 片段里可能残留多次标记留下的旧 oaq：只认最后追加的那一个。
     let token = "";
     for (const part of hash.split("&")) {
-      if (part.indexOf("oaq=") === 0) {
-        token = part.slice(4);
-        break;
-      }
+      if (part.indexOf("oaq=") === 0) token = part.slice(4);
     }
     if (!token) return null;
     try {

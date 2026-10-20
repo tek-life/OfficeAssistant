@@ -43,6 +43,21 @@ class JumpUrlTests(unittest.TestCase):
         url = qs.build_jump_url("https://example.com/a#sec-3", self.ANCHOR)
         self.assertTrue(url.startswith("https://example.com/a#sec-3&oaq="))
 
+    def test_replaces_stale_oaq_fragment(self):
+        """同一篇文章被反复标记时，链接里只会留下最新那一次的锚点。"""
+        first = qs.build_jump_url("https://example.com/a", {"q": "一"})
+        second = qs.build_jump_url(first, {"q": "二"})
+        self.assertEqual(second.count("oaq="), 1)
+        token = second.split("#oaq=", 1)[1]
+        self.assertEqual(qs.decode_anchor(token), {"q": "二"})
+
+    def test_drops_stale_oaq_but_keeps_router_fragment(self):
+        for stale in ("https://example.com/a#sec-3&oaq=STALE",
+                      "https://example.com/a#oaq=STALE&sec-3"):
+            url = qs.build_jump_url(stale, self.ANCHOR)
+            self.assertTrue(url.startswith("https://example.com/a#sec-3&oaq="))
+            self.assertNotIn("STALE", url)
+
     def test_empty_anchor_returns_url_unchanged(self):
         self.assertEqual(qs.build_jump_url("https://e.com/x#y", None),
                          "https://e.com/x#y")
