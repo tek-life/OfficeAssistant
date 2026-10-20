@@ -205,6 +205,26 @@ class QuestionWindowTests(unittest.TestCase):
         label = row.findChild(QLabel, "questionQuote")
         self.assertEqual(label.text(), "需要引用的主题句。 " + "⚑" * 3)
 
+    def test_row_shows_serial_number_in_order(self):
+        self.db.add_question(quote="第一条。")
+        self.db.add_question(quote="第二条。")
+        self.window.refresh_list()
+        numbers = []
+        for i in range(self.window.list.count()):
+            row = self.window.list.itemWidget(self.window.list.item(i))
+            label = row.findChild(QLabel, "questionIndex")
+            self.assertIsNotNone(label)
+            numbers.append(label.text())
+        self.assertEqual(numbers, ["1", "2"])
+
+    def test_rows_stay_compact_without_word_wrap(self):
+        self.db.add_question(quote=LONG_PARAGRAPH, title="论文题目")
+        self.window.refresh_list()
+        row = self.window.list.itemWidget(self.window.list.item(0))
+        label = row.findChild(QLabel, "questionQuote")
+        self.assertFalse(label.wordWrap())
+        self.assertLessEqual(row.sizeHint().height(), 96)
+
 
 class QuestionQuoteTitleTests(unittest.TestCase):
     """疑难原文压缩成列表标题的纯函数测试，不需要 Qt 窗口。"""

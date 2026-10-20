@@ -23,7 +23,8 @@ import shiboken6
 import question_server
 from window_chrome import ChromeWindow
 from PySide6.QtCore import (
-    QDate, QEvent, QLocale, QObject, QPointF, QRectF, QSignalBlocker, QTimer, Qt, QUrl, Signal,
+    QDate, QEvent, QLocale, QObject, QPointF, QRectF, QSize, QSignalBlocker, QTimer, Qt,
+    QUrl, Signal,
 )
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter,
                            QPalette, QPen, QTextCharFormat, QTextCursor)
@@ -147,6 +148,33 @@ class TodoCheckBox(QCheckBox):
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(QColor(COLORS["secondary"]), 1, Qt.DotLine))
             painter.drawRoundedRect(QRectF(0.5, 0.5, 23, 23), 5, 5)
+
+
+class ElidedLabel(QLabel):
+    """单行标签：宽度不足时用省略号截断，完整文本留在悬停提示里。
+
+    故意不做自动换行，行高由字体行高决定，放进 QListWidget 后
+    不会被拉成忽大忽小的高度。
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setTextFormat(Qt.PlainText)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+
+    def sizeHint(self):
+        return QSize(0, self.fontMetrics().height())
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setFont(self.font())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        text = self.fontMetrics().elidedText(self.text(), Qt.ElideRight, self.width())
+        painter.drawText(self.rect(), int(self.alignment()), text)
+        painter.end()
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1693,13 +1721,13 @@ class QuestionWindow(ChromeWindow):
             else "在网页上选中不懂的句子，右键「标记疑难」，就会汇总到这里。")
         self.list.clear()
         self.content_stack.setCurrentWidget(self.list if rows else self.empty_state)
-        for r in rows:
+        for position, r in enumerate(rows, start=1):
             item = QListWidgetItem()
             item.setData(Qt.UserRole, r["id"])
             item.setData(Qt.AccessibleTextRole,
                          r["quote"] or r["question"] or r["url"])
             self.list.addItem(item)
-            row = self._build_row(r, resolved)
+            row = self._build_row(r, resolved, position)
             item.setSizeHint(row.sizeHint())
             self.list.setItemWidget(item, row)
             if r["id"] == selected_id:
@@ -1707,23 +1735,30 @@ class QuestionWindow(ChromeWindow):
         self.list.verticalScrollBar().setValue(scroll_position)
         self._sync_actions()
 
-    def _build_row(self, record, resolved):
+    def _build_row(self, record, resolved, index=None):
         row = QWidget()
         row.setObjectName("questionRow")
         row.setFont(self.list.font())
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(6, 14, 6, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(10)
+
+        if index is not None:
+            number = QLabel("%d" % index)
+            number.setObjectName("questionIndex")
+            number.setProperty("tone", "secondary")
+            number.setFont(QFont(BASE_FONT, 10))
+            number.setFixedWidth(24)
+            number.setAlignment(Qt.AlignRight | Qt.AlignTop)
+            number.setAttribute(Qt.WA_TransparentForMouseEvents)
+            layout.addWidget(number, 0)
 
         text_layout = QVBoxLayout()
-        text_layout.setSpacing(4)
+        text_layout.setSpacing(2)
         flags = {1: " ⚑", 2: " ⚑⚑", 3: " ⚑⚑⚑"}.get(record["priority"], "")
         title = self._quote_title(record["quote"]) or "(未记录原文)"
-        quote = QLabel("%s%s" % (title, flags))
+        quote = ElidedLabel("%s%s" % (title, flags))
         quote.setObjectName("questionQuote")
-        quote.setTextFormat(Qt.PlainText)
-        quote.setWordWrap(True)
-        quote.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         quote.setAttribute(Qt.WA_TransparentForMouseEvents)
         quote_font = QFont(self.list.font())
         quote_font.setStrikeOut(bool(resolved))
@@ -1733,10 +1768,7 @@ class QuestionWindow(ChromeWindow):
         text_layout.addWidget(quote)
 
         if record["question"]:
-            question = QLabel(record["question"])
-            question.setTextFormat(Qt.PlainText)
-            question.setWordWrap(True)
-            question.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            question = ElidedLabel(record["question"])
             question.setAttribute(Qt.WA_TransparentForMouseEvents)
             text_layout.addWidget(question)
 
@@ -1748,10 +1780,9 @@ class QuestionWindow(ChromeWindow):
             chip.setAttribute(Qt.WA_TransparentForMouseEvents)
             meta_row.addWidget(chip)
         source = record["title"] or record["url"] or "未知来源"
-        meta = QLabel("%s · %s" % (source, record["created_at"][:16]))
+        meta = ElidedLabel("%s · %s" % (source, record["created_at"][:16]))
         meta.setObjectName("questionMeta")
         meta.setFont(QFont(BASE_FONT, 9))
-        meta.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         meta.setAttribute(Qt.WA_TransparentForMouseEvents)
         meta_row.addWidget(meta, 1)
         text_layout.addLayout(meta_row)
