@@ -188,18 +188,39 @@
     }
   }
 
+  // 每次跳转只保留一份高亮：先清掉上一次的高亮和它的清除定时器，
+  // 否则旧定时器会在 HIGHLIGHT_MS 后把新跳转的高亮一并抹掉。
+  let highlightTimer = null;
+
+  function clearHighlight() {
+    if (highlightTimer) {
+      clearTimeout(highlightTimer);
+      highlightTimer = null;
+    }
+    if (window.CSS && CSS.highlights) CSS.highlights.delete("oaq");
+    clearWrappedMarks();
+  }
+
+  function scheduleHighlightClear() {
+    if (highlightTimer) clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      highlightTimer = null;
+      clearHighlight();
+    }, HIGHLIGHT_MS);
+  }
+
   function highlightRange(range) {
+    clearHighlight();
     const container = range.startContainer;
     const el = container.nodeType === 1 ? container : container.parentElement;
     if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
     if (window.CSS && CSS.highlights && typeof Highlight === "function") {
       ensureHighlightStyle();
       CSS.highlights.set("oaq", new Highlight(range));
-      setTimeout(() => CSS.highlights.delete("oaq"), HIGHLIGHT_MS);
-      return true;
+    } else {
+      markRange(range);
     }
-    markRange(range);
-    setTimeout(clearWrappedMarks, HIGHLIGHT_MS);
+    scheduleHighlightClear();
     return true;
   }
 
@@ -212,18 +233,23 @@
     if (!normQuote) return null;
     const pre = (anchor.p || "").trim();
     const suf = (anchor.s || "").trim();
+    // 同一句话可能在页面里出现多次：先按前/后文打分，
+    // 分数相同时再参考采集时的字符偏移 o，避免总是命中第一处。
+    const offsetHint = typeof anchor.o === "number" ? anchor.o : -1;
     let idx = norm.indexOf(normQuote);
     let bestIdx = -1;
     let bestScore = -1;
+    let bestDist = Infinity;
     while (idx >= 0) {
       let score = 0;
       if (pre && norm.slice(Math.max(0, idx - pre.length), idx) === pre) score += 2;
       if (suf && norm.slice(idx + normQuote.length, idx + normQuote.length + suf.length) === suf) score += 2;
-      if (score > bestScore) {
+      const dist = offsetHint >= 0 ? Math.abs(map[idx] - offsetHint) : Infinity;
+      if (score > bestScore || (score === bestScore && dist < bestDist)) {
         bestScore = score;
+        bestDist = dist;
         bestIdx = idx;
       }
-      if (score >= 4) break;
       idx = norm.indexOf(normQuote, idx + 1);
     }
     if (bestIdx < 0) return null;
@@ -233,17 +259,41 @@
     return rangeFromOffsets(startRaw, Math.max(1, endRaw - startRaw));
   }
 
-  function applyJump() {
-    const anchor = anchorFromHash();
-    if (!anchor || !anchor.q) return;
-    const range = locateRange(anchor);
-    if (range && highlightRange(range)) return;
-    // 退化：用浏览器内置查找选中并滚动到该文字。
-    try {
-      window.find(anchor.q.trim(), false, false, true, false, true, false);
-    } catch (e) {
-      /* 忽略：页面可能不允许查找 */
+  // 页面内容可能是异步渲染出来的：定位失败时短期反复重试，成功即停。
+  const JUMP_RETRY_MS = 400;
+  const JUMP_RETRY_LIMIT = 12;
+  let retryTimer = null;
+  let retryLeft = 0;
+
+  function stopRetry() {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
     }
+    retryLeft = 0;
+  }
+
+  function tryJump() {
+    const anchor = anchorFromHash();
+    if (!anchor || !anchor.q) return true;
+    const range = locateRange(anchor);
+    if (range) {
+      stopRetry();
+      highlightRange(range);
+      return true;
+    }
+    if (retryLeft > 0) {
+      retryLeft -= 1;
+      retryTimer = setTimeout(tryJump, JUMP_RETRY_MS);
+    }
+    return false;
+  }
+
+  function applyJump() {
+    stopRetry();
+    clearHighlight();
+    retryLeft = JUMP_RETRY_LIMIT;
+    tryJump();
   }
 
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
@@ -256,5 +306,6 @@
   }
 
   window.addEventListener("hashchange", applyJump);
+  window.addEventListener("pageshow", applyJump);
   applyJump();
 })();
