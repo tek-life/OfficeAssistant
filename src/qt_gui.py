@@ -9,6 +9,7 @@
 都通过请求队列投递到该线程执行，满足 Qt "控件只能在创建它的线程操作" 的约束。
 """
 
+import ctypes
 import html as _html
 import json
 import math
@@ -19,17 +20,19 @@ import threading
 from datetime import datetime
 
 import shiboken6
+import question_server
 from window_chrome import ChromeWindow
 from PySide6.QtCore import (
-    QDate, QLocale, QObject, QPointF, QRectF, QSignalBlocker, QTimer, Qt, QUrl, Signal,
+    QDate, QEvent, QLocale, QObject, QPointF, QRectF, QSignalBlocker, QTimer, Qt, QUrl, Signal,
 )
-from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen, QTextCharFormat, QTextCursor
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPainter,
+                           QPalette, QPen, QTextCharFormat, QTextCursor)
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QTextEdit, QPlainTextEdit, QListWidget,
     QListWidgetItem, QLineEdit, QMessageBox, QCheckBox, QTabBar, QSizePolicy,
-    QCalendarWidget, QComboBox, QSpinBox,
+    QCalendarWidget, QComboBox, QMenu, QSpinBox,
 )
 
 BASE_FONT = "Microsoft YaHei UI"
@@ -41,7 +44,7 @@ COLORS = {
     "danger": "#d62424", "danger_pressed": "#b51f1f",
 }
 WINDOW_STYLE = """
-QWidget#todoWindow, QWidget#diaryWindow { background: %(surface)s; }
+QWidget#todoWindow, QWidget#diaryWindow, QWidget#questionWindow { background: %(surface)s; }
 QLabel { background: transparent; }
 QLabel[tone="secondary"] { color: %(secondary)s; }
 QPushButton { background: transparent; color: %(text)s; border: 1px solid transparent;
@@ -82,6 +85,10 @@ QListWidget::item:hover { background: %(sidebar)s; }
 QListWidget::item:selected { background: %(selected)s; color: %(text)s; }
 QListWidget::item:focus { border: 1px solid %(secondary)s; }
 QWidget#todoRow { background: transparent; border-bottom: 1px solid %(border)s; }
+QWidget#questionRow { background: transparent; border-bottom: 1px solid %(border)s; }
+QLabel#questionMeta { color: %(secondary)s; }
+QLabel#questionChip { color: %(secondary)s; background: %(sidebar)s;
+    border: 1px solid %(border)s; border-radius: 4px; padding: 1px 6px; font-size: 11px; }
 QWidget#todoInput { background: %(sidebar)s; border: 1px solid %(border)s; border-radius: 10px; }
 QLineEdit#todoEntry { color: %(text)s; background: transparent; border: 1px solid transparent;
     border-radius: 5px; padding: 5px; selection-background-color: %(selected)s;
@@ -884,6 +891,37 @@ class DiaryWindow(ChromeWindow):
         self.calendar.set_recorded_dates(dates)
         self._calendar_page_changed(self.calendar.yearShown(), self.calendar.monthShown())
 
+    def append_external(self, entry, date_str):
+        """一键投递写入数据库后，把新条目同步到已打开的日志窗口。
+
+        必须在窗口所属的 Qt 线程中调用。返回是否把条目并入了编辑器。
+        """
+        self._refresh_calendar_marks()
+        if date_str != self.current_date:
+            return False
+        if self.mode != "edit":
+            self.load_date(date_str)
+            return True
+        if self.editor.toPlainText() == self._saved_content:
+            # 编辑器没有未保存的改动：并入条目并保持"已保存"状态
+            old = self._saved_content.rstrip()
+            merged = f"{old}\n\n{entry}" if old else entry
+            position = self.editor.textCursor().position()
+            self.editor.setPlainText(merged)
+            cursor = self.editor.textCursor()
+            cursor.setPosition(min(position, len(merged)))
+            self.editor.setTextCursor(cursor)
+            self._saved_content = merged
+        else:
+            # 有未保存的输入：追加到编辑器末尾，保留用户改动（仍标记未保存）
+            current = self.editor.toPlainText().rstrip()
+            self.editor.setPlainText(f"{current}\n\n{entry}" if current else entry)
+            cursor = self.editor.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.editor.setTextCursor(cursor)
+        self._update_save_status()
+        return True
+
     # --- 关闭 ---
     def closeEvent(self, event):
         self._closed = True
@@ -1138,6 +1176,660 @@ class TodoEditorWindow(ChromeWindow):
             self.entry.clear()
             self.refresh_list()
             self._notify()
+
+    def closeEvent(self, event):
+        self._closed = True
+        event.accept()
+
+
+# ═══════════════════════════════════════════════════════════
+# 桌面投递气泡（可见的一键投递入口）
+# ═══════════════════════════════════════════════════════════
+
+BUBBLE_IDLE = "idle"
+BUBBLE_BUSY = "busy"
+BUBBLE_OK = "ok"
+BUBBLE_ERROR = "error"
+
+BUBBLE_STYLE = """
+QWidget#captureBubble { background: #fff8db; border: 1px solid #e6c34a;
+    border-radius: 8px; }
+QWidget#captureBubble[state="ok"] { background: #eaf7e6; border-color: #8fc487; }
+QWidget#captureBubble[state="error"] { background: #fdeaea; border-color: #e5a5a5; }
+QLabel#bubbleTitle { color: #7a5c00; font-weight: bold; background: transparent; }
+QWidget#captureBubble[state="ok"] QLabel#bubbleTitle { color: #2f6b28; }
+QWidget#captureBubble[state="error"] QLabel#bubbleTitle { color: #9a2b2b; }
+QLabel#bubbleStatus { color: #8a6f22; background: transparent; }
+QWidget#captureBubble[state="ok"] QLabel#bubbleStatus { color: #3c7a34; }
+QWidget#captureBubble[state="error"] QLabel#bubbleStatus { color: #a84040; }
+"""
+
+
+def _foreground_hwnd():
+    """当前前台窗口句柄（点击气泡前用户正在操作的窗口）。"""
+    try:
+        return int(ctypes.windll.user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def _set_no_activate(widget):
+    """给气泡窗口加上 WS_EX_NOACTIVATE / WS_EX_TOOLWINDOW。
+
+    点击气泡时来源窗口必须保持焦点，注入的 Ctrl+C 才能复制到用户选中的文字。
+    """
+    try:
+        hwnd = int(widget.winId())
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            get_long, set_long = user32.GetWindowLongPtrW, user32.SetWindowLongPtrW
+            long_t = ctypes.c_ssize_t
+        else:
+            get_long, set_long = user32.GetWindowLongW, user32.SetWindowLongW
+            long_t = ctypes.c_int32
+        get_long.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        get_long.restype = long_t
+        set_long.argtypes = [ctypes.c_void_p, ctypes.c_int, long_t]
+        set_long.restype = long_t
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE = 0x08000000
+        WS_EX_TOOLWINDOW = 0x00000080
+        style = get_long(hwnd, GWL_EXSTYLE)
+        set_long(hwnd, GWL_EXSTYLE,
+                 (style or 0) | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    except Exception as e:
+        print(f"[投递气泡] 设置窗口样式失败: {e}")
+
+
+class CaptureBubble(QWidget):
+    """桌面常驻的投递气泡：左键记录选中内容，右键打开投递菜单。
+
+    - WS_EX_NOACTIVATE 保证点击气泡时来源窗口仍是前台窗口，
+      这样抓取选中内容时注入的 Ctrl+C 才有效。
+    - 可拖动，位置由调用方持久化（on_moved 回调）。
+    """
+
+    def __init__(self, on_capture=None, on_open_diary=None, on_hide=None,
+                 on_moved=None):
+        super().__init__(None)
+        self.on_capture = on_capture
+        self.on_open_diary = on_open_diary
+        self.on_hide = on_hide
+        self.on_moved = on_moved
+        self._state = BUBBLE_IDLE
+        self._press_offset = None
+        self._dragged = False
+        self._no_activate_applied = False
+        self._reset_timer = QTimer(self)
+        self._reset_timer.setSingleShot(True)
+        self._reset_timer.timeout.connect(self._reset)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                            | Qt.WindowStaysOnTopHint
+                            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedSize(104, 58)
+        self.setToolTip("左键：记录选中内容\n右键：更多投递方式\n拖动：移动气泡")
+        self._build_ui()
+        self._apply_state()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(2)
+        self.title_label = QLabel("投递", self)
+        self.title_label.setObjectName("bubbleTitle")
+        self.status_label = QLabel("", self)
+        self.status_label.setObjectName("bubbleStatus")
+        self.status_label.setFont(QFont(BASE_FONT, 8))
+        self.status_label.setFixedWidth(self.width() - 24)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.status_label)
+
+    def _apply_state(self):
+        self.setProperty("state", self._state)
+        self.setStyleSheet(BUBBLE_STYLE)
+        for widget in (self, self.title_label, self.status_label):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    # --- 状态 ---
+    @staticmethod
+    def _shorten(text, limit=10):
+        text = (text or "").replace("\n", " ").strip()
+        return text if len(text) <= limit else text[:limit - 1] + "…"
+
+    def set_busy(self, text="读取中…"):
+        self._state = BUBBLE_BUSY
+        self.status_label.setText(self._shorten(text))
+        self._apply_state()
+
+    def show_result(self, state, text):
+        self._state = state
+        self.status_label.setText(self._shorten(text))
+        self._apply_state()
+        self._reset_timer.start(4000)
+
+    def _reset(self):
+        self._state = BUBBLE_IDLE
+        self.status_label.setText("")
+        self._apply_state()
+
+    # --- 位置 ---
+    def show_at(self, x, y):
+        if x is None or y is None or int(x) < 0 or int(y) < 0:
+            self._move_default()
+        else:
+            self.move(int(x), int(y))
+            self._clamp()
+        self.show()
+        self.raise_()
+
+    def _move_default(self):
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.move(area.right() - self.width() - 24, area.top() + 96)
+
+    def _clamp(self):
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x = min(max(self.x(), area.left()), area.right() - self.width() + 1)
+        y = min(max(self.y(), area.top()), area.bottom() - self.height() + 1)
+        self.move(x, y)
+
+    # --- 交互 ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_offset = (event.globalPosition().toPoint()
+                                  - self.frameGeometry().topLeft())
+            self._dragged = False
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_offset is not None and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._press_offset)
+            self._dragged = True
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_offset is not None:
+            dragged = self._dragged
+            self._press_offset = None
+            self._dragged = False
+            if dragged:
+                self._clamp()
+                if self.on_moved:
+                    self.on_moved(self.x(), self.y())
+            else:
+                self._dispatch("selection")
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            self._popup_menu(event.globalPosition().toPoint())
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def _build_menu(self):
+        menu = QMenu(self)
+        menu.addAction("记录选中内容", lambda: self._dispatch("selection"))
+        menu.addAction("记录剪贴板", lambda: self._dispatch("clipboard"))
+        menu.addSeparator()
+        menu.addAction("打开工作日志", self._open_diary)
+        menu.addSeparator()
+        menu.addAction("隐藏气泡", self._hide)
+        return menu
+
+    def _popup_menu(self, global_pos):
+        self._build_menu().exec(global_pos)
+
+    def _dispatch(self, mode):
+        if self.on_capture:
+            self.on_capture(mode)
+
+    def _open_diary(self):
+        if self.on_open_diary:
+            self.on_open_diary()
+
+    def _hide(self):
+        if self.on_hide:
+            self.on_hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._no_activate_applied:
+            _set_no_activate(self)
+            self._no_activate_applied = True
+
+# ═══════════════════════════════════════════════════════════
+# 阅读疑难（收集气泡 + 疑问清单窗口）
+# ═══════════════════════════════════════════════════════════
+
+QUESTION_BUBBLE_STYLE = """
+QWidget#questionBubble { background: #e7f1fb; border: 1px solid #7fb0d8;
+    border-radius: 8px; }
+QLabel#questionBubbleTitle { color: #1f5c88; font-weight: bold; background: transparent; }
+QLabel#questionBubbleStatus { color: #3f6f95; background: transparent; }
+"""
+
+
+class QuestionBubble(QWidget):
+    """阅读疑难气泡：左键打开疑难清单，右键更多操作。
+
+    与投递气泡（CaptureBubble）互相独立：这里不做内容捕获，只作为清单入口，
+    并显示当前待解决的条数。
+    """
+
+    def __init__(self, on_open=None, on_hide=None, on_moved=None):
+        super().__init__(None)
+        self.on_open = on_open
+        self.on_hide = on_hide
+        self.on_moved = on_moved
+        self._press_offset = None
+        self._dragged = False
+        self._no_activate_applied = False
+        self.setObjectName("questionBubble")
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                            | Qt.WindowStaysOnTopHint
+                            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFixedSize(96, 58)
+        self.setToolTip("左键：打开疑难清单  右键：更多操作  拖动：移动气泡")
+        self._build_ui()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(2)
+        self.title_label = QLabel("疑难", self)
+        self.title_label.setObjectName("questionBubbleTitle")
+        self.status_label = QLabel("", self)
+        self.status_label.setObjectName("questionBubbleStatus")
+        self.status_label.setFont(QFont(BASE_FONT, 8))
+        self.status_label.setFixedWidth(self.width() - 24)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.status_label)
+        self.setStyleSheet(QUESTION_BUBBLE_STYLE)
+
+    def set_count(self, count):
+        """更新气泡上的待解决条数。"""
+        count = int(count or 0)
+        self.status_label.setText("%d 条待解决" % count if count else "暂无疑问")
+
+    # --- 位置 ---
+    def show_at(self, x, y):
+        if x is None or y is None or int(x) < 0 or int(y) < 0:
+            self._move_default()
+        else:
+            self.move(int(x), int(y))
+            self._clamp()
+        self.show()
+        self.raise_()
+
+    def _move_default(self):
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.move(area.right() - self.width() - 24, area.top() + 168)
+
+    def _clamp(self):
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x = min(max(self.x(), area.left()), area.right() - self.width() + 1)
+        y = min(max(self.y(), area.top()), area.bottom() - self.height() + 1)
+        self.move(x, y)
+
+    # --- 交互 ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_offset = (event.globalPosition().toPoint()
+                                  - self.frameGeometry().topLeft())
+            self._dragged = False
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_offset is not None and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPosition().toPoint() - self._press_offset)
+            self._dragged = True
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_offset is not None:
+            dragged = self._dragged
+            self._press_offset = None
+            self._dragged = False
+            if dragged:
+                self._clamp()
+                if self.on_moved:
+                    self.on_moved(self.x(), self.y())
+            else:
+                self._open()
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            self._popup_menu(event.globalPosition().toPoint())
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def _build_menu(self):
+        menu = QMenu(self)
+        menu.addAction("打开疑难清单", self._open)
+        menu.addSeparator()
+        menu.addAction("隐藏气泡", self._hide)
+        return menu
+
+    def _popup_menu(self, global_pos):
+        self._build_menu().exec(global_pos)
+
+    def _open(self):
+        if self.on_open:
+            self.on_open()
+
+    def _hide(self):
+        if self.on_hide:
+            self.on_hide()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._no_activate_applied:
+            _set_no_activate(self)
+            self._no_activate_applied = True
+
+
+class QuestionWindow(ChromeWindow):
+    """阅读疑难清单：所有疑问汇到这一处，每条都能一键跳回原文高亮。"""
+
+    RESOLVE_TEXT = {True: "恢复未解决", False: "标记已解决"}
+
+    def __init__(self, db, on_changed=None):
+        super().__init__()
+        self.db = db
+        self.on_changed = on_changed
+        self._closed = False
+        self._build_ui()
+        self.refresh_list()
+
+    def _build_ui(self):
+        self.setWindowTitle("阅读疑难")
+        self.setObjectName("questionWindow")
+        self.resize(720, 660)
+        self.setMinimumSize(480, 460)
+        _apply_window_style(self)
+        self.title_bar.title_label.setText("阅读疑难")
+
+        content = QWidget()
+        self.chrome_layout.addWidget(content, 1)
+        root = QVBoxLayout(content)
+        root.setContentsMargins(28, 24, 28, 20)
+        root.setSpacing(12)
+
+        title_row = QHBoxLayout()
+        title = QLabel("阅读疑难")
+        title.setFont(QFont(BASE_FONT, 20, QFont.DemiBold))
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        self.summary = QLabel("")
+        self.summary.setObjectName("questionSummary")
+        self.summary.setProperty("tone", "secondary")
+        self.summary.setFont(QFont(BASE_FONT, 9))
+        title_row.addWidget(self.summary)
+        root.addLayout(title_row)
+        root.addSpacing(4)
+
+        navigation = QWidget()
+        navigation.setObjectName("questionNavigation")
+        nav = QHBoxLayout(navigation)
+        nav.setContentsMargins(0, 0, 0, 0)
+        self.tabs = QTabBar()
+        self.tabs.setFont(QFont(BASE_FONT, 10))
+        self.tabs.setExpanding(False)
+        self.tabs.setDrawBase(False)
+        self.tabs.addTab("待解决")
+        self.tabs.addTab("已解决")
+        nav.addWidget(self.tabs)
+        nav.addStretch(1)
+        self.open_button = QPushButton("打开原文")
+        self.open_button.setProperty("variant", "primary")
+        self.open_button.setFixedHeight(32)
+        self.open_button.setToolTip("在浏览器中打开，并高亮当时的句子")
+        self.open_button.clicked.connect(self.open_selected)
+        nav.addWidget(self.open_button)
+        self.resolve_button = QPushButton("标记已解决")
+        self.resolve_button.setProperty("variant", "quiet")
+        self.resolve_button.setFixedHeight(32)
+        self.resolve_button.clicked.connect(self.toggle_selected)
+        nav.addWidget(self.resolve_button)
+        self.delete_button = QPushButton("删除")
+        self.delete_button.setProperty("variant", "quiet")
+        self.delete_button.setFixedHeight(32)
+        self.delete_button.setToolTip("删除选中的疑难")
+        self.delete_button.clicked.connect(self.delete_selected)
+        nav.addWidget(self.delete_button)
+        root.addWidget(navigation)
+
+        self.content_stack = QStackedWidget()
+        self.list = QListWidget()
+        self.list.setFont(QFont(BASE_FONT, 12))
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list.setWordWrap(True)
+        self.list.itemSelectionChanged.connect(self._sync_actions)
+        self.list.itemDoubleClicked.connect(lambda _item: self.open_selected())
+        self.content_stack.addWidget(self.list)
+        self.empty_state = QWidget()
+        empty = QVBoxLayout(self.empty_state)
+        empty.setSpacing(10)
+        empty.addStretch(1)
+        self.empty_title = QLabel("")
+        self.empty_title.setObjectName("questionEmptyTitle")
+        self.empty_title.setFont(QFont(BASE_FONT, 15))
+        empty.addWidget(self.empty_title, 0, Qt.AlignCenter)
+        self.empty_hint = QLabel("")
+        self.empty_hint.setProperty("tone", "secondary")
+        self.empty_hint.setWordWrap(True)
+        self.empty_hint.setAlignment(Qt.AlignCenter)
+        empty.addWidget(self.empty_hint)
+        empty.addStretch(1)
+        self.content_stack.addWidget(self.empty_state)
+        root.addWidget(self.content_stack, 1)
+
+        self.tabs.currentChanged.connect(self.refresh_list)
+        self._sync_actions()
+
+    # --- 列表 ---
+    def _rows(self):
+        return self.db.get_questions(resolved=self.tabs.currentIndex() == 1)
+
+    # 疑难原文常是整段话，列表里只放首句做标题，完整原文留给悬停提示。
+    QUOTE_TITLE_LIMIT = 72
+
+    @staticmethod
+    def _quote_title(text, limit=QUOTE_TITLE_LIMIT):
+        """把疑难原文压成一行标题：取第一句，过长再截断成省略号。"""
+        clean = re.sub(r"\s+", " ", text or "").strip()
+        if not clean:
+            return ""
+        match = re.search(r"[^。！？!?…]*[。！？!?…]", clean)
+        title = (match.group(0) if match else clean).strip()
+        if len(title) > limit:
+            title = title[:limit].rstrip() + "…"
+        return title
+
+    def refresh_list(self):
+        selected = self.list.selectedItems()
+        selected_id = selected[0].data(Qt.UserRole) if selected else None
+        scroll_position = self.list.verticalScrollBar().value()
+        resolved = self.tabs.currentIndex() == 1
+        rows = self._rows()
+        pending = self.db.count_questions()
+        done = self.db.count_questions(resolved=True)
+        self.summary.setText("%d 条待解决 · %d 条已解决" % (pending, done))
+        self.empty_title.setText("这些疑问都解决了" if resolved else "还没有记录疑问")
+        self.empty_hint.setText(
+            "已解决的疑问会留在这里，可随时恢复。" if resolved
+            else "在网页上选中不懂的句子，右键「标记疑难」，就会汇总到这里。")
+        self.list.clear()
+        self.content_stack.setCurrentWidget(self.list if rows else self.empty_state)
+        for r in rows:
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, r["id"])
+            item.setData(Qt.AccessibleTextRole,
+                         r["quote"] or r["question"] or r["url"])
+            self.list.addItem(item)
+            row = self._build_row(r, resolved)
+            item.setSizeHint(row.sizeHint())
+            self.list.setItemWidget(item, row)
+            if r["id"] == selected_id:
+                self.list.setCurrentItem(item)
+        self.list.verticalScrollBar().setValue(scroll_position)
+        self._sync_actions()
+
+    def _build_row(self, record, resolved):
+        row = QWidget()
+        row.setObjectName("questionRow")
+        row.setFont(self.list.font())
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(6, 14, 6, 14)
+        layout.setSpacing(12)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+        flags = {1: " ⚑", 2: " ⚑⚑", 3: " ⚑⚑⚑"}.get(record["priority"], "")
+        title = self._quote_title(record["quote"]) or "(未记录原文)"
+        quote = QLabel("%s%s" % (title, flags))
+        quote.setObjectName("questionQuote")
+        quote.setTextFormat(Qt.PlainText)
+        quote.setWordWrap(True)
+        quote.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        quote.setAttribute(Qt.WA_TransparentForMouseEvents)
+        quote_font = QFont(self.list.font())
+        quote_font.setStrikeOut(bool(resolved))
+        quote.setFont(quote_font)
+        if resolved:
+            quote.setProperty("tone", "secondary")
+        text_layout.addWidget(quote)
+
+        if record["question"]:
+            question = QLabel(record["question"])
+            question.setTextFormat(Qt.PlainText)
+            question.setWordWrap(True)
+            question.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            question.setAttribute(Qt.WA_TransparentForMouseEvents)
+            text_layout.addWidget(question)
+
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(8)
+        if record["category"]:
+            chip = QLabel(record["category"])
+            chip.setObjectName("questionChip")
+            chip.setAttribute(Qt.WA_TransparentForMouseEvents)
+            meta_row.addWidget(chip)
+        source = record["title"] or record["url"] or "未知来源"
+        meta = QLabel("%s · %s" % (source, record["created_at"][:16]))
+        meta.setObjectName("questionMeta")
+        meta.setFont(QFont(BASE_FONT, 9))
+        meta.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        meta.setAttribute(Qt.WA_TransparentForMouseEvents)
+        meta_row.addWidget(meta, 1)
+        text_layout.addLayout(meta_row)
+        row.setToolTip("<qt>%s</qt>" % _html.escape(record["quote"] or ""))
+        layout.addLayout(text_layout, 1)
+
+        open_button = QPushButton("打开原文")
+        open_button.setProperty("variant", "quiet")
+        open_button.setFont(QFont(BASE_FONT, 10))
+        open_button.setFixedHeight(32)
+        open_button.clicked.connect(
+            lambda checked=False, rid=record["id"]: self.open_by_id(rid)
+        )
+        layout.addWidget(open_button, 0, Qt.AlignTop)
+        return row
+
+    def _sync_actions(self):
+        has_selection = bool(self.list.selectedItems())
+        resolved = self.tabs.currentIndex() == 1
+        self.open_button.setEnabled(has_selection)
+        self.resolve_button.setEnabled(has_selection)
+        self.resolve_button.setText(self.RESOLVE_TEXT[resolved])
+        self.delete_button.setEnabled(has_selection)
+
+    def _selected_id(self):
+        selected = self.list.selectedItems()
+        return selected[0].data(Qt.UserRole) if selected else None
+
+    # --- 动作 ---
+    @staticmethod
+    def _jump_url_for(record):
+        """由疑难记录生成带回跳锚点的链接；无锚点时退回原链接。"""
+        anchor = {}
+        raw = (record.get("anchor") or "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                parsed = None
+            if isinstance(parsed, dict):
+                anchor = parsed
+        return question_server.build_jump_url(record.get("url") or "", anchor)
+
+    def open_original(self, record):
+        """在默认浏览器中打开原文，并带上高亮锚点。"""
+        if not record:
+            return False
+        url = self._jump_url_for(record)
+        if not url:
+            return False
+        QDesktopServices.openUrl(QUrl(url))
+        return True
+
+    def open_by_id(self, question_id):
+        self.open_original(self.db.get_question(question_id))
+
+    def open_selected(self):
+        self.open_by_id(self._selected_id())
+
+    def toggle_selected(self):
+        selected_id = self._selected_id()
+        if selected_id is None:
+            return
+        self.db.toggle_question_resolved(selected_id)
+        self.refresh_list()
+        self._notify()
+
+    def delete_selected(self):
+        selected_id = self._selected_id()
+        if selected_id is None:
+            return
+        self.db.delete_question(selected_id)
+        self.refresh_list()
+        self._notify()
+
+    def _notify(self):
+        if self.on_changed:
+            self.on_changed()
 
     def closeEvent(self, event):
         self._closed = True

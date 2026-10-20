@@ -274,5 +274,153 @@ class DiaryWeatherTests(unittest.TestCase):
         self.assertEqual(self.db.get_daily_note("2026-10-01")["weather"], "")
 
 
+class QuestionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.db_path = Path(self.temp_dir.name) / "questions.db"
+        self.db = Database(self.db_path)
+        self.addCleanup(lambda: self.db.close())
+
+    def stored_question(self, question_id):
+        return dict(self.db.conn.execute(
+            "SELECT * FROM questions WHERE id=?", (question_id,)
+        ).fetchone())
+
+    def test_new_question_defaults(self):
+        qid = self.db.add_question(quote="不懂的句子")
+        row = self.db.get_question(qid)
+        self.assertEqual(row["quote"], "不懂的句子")
+        for field in ("url", "title", "question", "category", "note", "anchor"):
+            self.assertEqual(row[field], "")
+        self.assertEqual(row["priority"], 0)
+        self.assertEqual(row["resolved"], 0)
+        self.assertIsNone(row["resolved_at"])
+        self.assertTrue(row["created_at"])
+        self.assertTrue(row["updated_at"])
+
+    def test_add_keeps_every_field(self):
+        qid = self.db.add_question(
+            url="https://example.com/a", title="标题", quote="原文",
+            question="为什么？", category="算法", priority=2,
+            note="待查", anchor='{"q":"原文"}')
+        row = self.db.get_question(qid)
+        self.assertEqual(row["url"], "https://example.com/a")
+        self.assertEqual(row["title"], "标题")
+        self.assertEqual(row["question"], "为什么？")
+        self.assertEqual(row["category"], "算法")
+        self.assertEqual(row["priority"], 2)
+        self.assertEqual(row["note"], "待查")
+        self.assertEqual(row["anchor"], '{"q":"原文"}')
+
+    def test_get_missing_question_returns_none(self):
+        self.assertIsNone(self.db.get_question(999))
+
+    def test_update_only_touches_allowed_fields(self):
+        qid = self.db.add_question(quote="原文", priority=1)
+        self.db.update_question(qid, question="补充问题", priority=3,
+                                resolved=1, id=42)
+        row = self.db.get_question(qid)
+        self.assertEqual(row["question"], "补充问题")
+        self.assertEqual(row["priority"], 3)
+        self.assertEqual(row["resolved"], 0)  # resolved 只能走 set/toggle
+        self.assertEqual(row["id"], qid)
+
+    def test_update_without_allowed_fields_is_noop(self):
+        qid = self.db.add_question(quote="原文")
+        before = self.stored_question(qid)
+        self.db.update_question(qid, unknown="x")
+        self.assertEqual(self.stored_question(qid), before)
+
+    def test_set_resolved_stamps_and_clears_time(self):
+        qid = self.db.add_question(quote="原文")
+        self.db.set_question_resolved(qid, True)
+        row = self.db.get_question(qid)
+        self.assertEqual(row["resolved"], 1)
+        self.assertTrue(row["resolved_at"])
+        self.db.set_question_resolved(qid, False)
+        row = self.db.get_question(qid)
+        self.assertEqual(row["resolved"], 0)
+        self.assertIsNone(row["resolved_at"])
+
+    def test_toggle_flips_and_ignores_missing(self):
+        qid = self.db.add_question(quote="原文")
+        self.db.toggle_question_resolved(qid)
+        self.assertEqual(self.db.get_question(qid)["resolved"], 1)
+        self.db.toggle_question_resolved(qid)
+        self.assertEqual(self.db.get_question(qid)["resolved"], 0)
+        self.db.toggle_question_resolved(999)  # 不存在的 id 不报错
+        self.assertEqual(self.db.count_questions(), 1)
+
+    def test_delete_removes_only_target(self):
+        first = self.db.add_question(quote="a")
+        second = self.db.add_question(quote="b")
+        self.db.delete_question(first)
+        self.assertIsNone(self.db.get_question(first))
+        self.assertIsNotNone(self.db.get_question(second))
+
+    def test_count_splits_by_resolved(self):
+        self.db.add_question(quote="未1")
+        self.db.add_question(quote="未2")
+        done = self.db.add_question(quote="已完成")
+        self.db.set_question_resolved(done, True)
+        self.assertEqual(self.db.count_questions(), 2)
+        self.assertEqual(self.db.count_questions(resolved=True), 1)
+
+    def test_get_questions_filter(self):
+        open_id = self.db.add_question(quote="未解决")
+        done_id = self.db.add_question(quote="已解决")
+        self.db.set_question_resolved(done_id, True)
+        self.assertEqual([r["id"] for r in self.db.get_questions()],
+                         [open_id, done_id])
+        self.assertEqual([r["id"] for r in self.db.get_questions(resolved=False)],
+                         [open_id])
+        self.assertEqual([r["id"] for r in self.db.get_questions(resolved=True)],
+                         [done_id])
+
+    def test_ordering_unresolved_then_priority_then_newest(self):
+        low = self.db.add_question(quote="低", priority=0)
+        high = self.db.add_question(quote="高", priority=3)
+        mid = self.db.add_question(quote="中", priority=1)
+        done = self.db.add_question(quote="已完成", priority=3)
+        self.db.set_question_resolved(done, True)
+        for qid in (low, high, mid):
+            self.db.conn.execute(
+                "UPDATE questions SET created_at=? WHERE id=?",
+                ("2026-10-08 12:00:00", qid))
+        self.db.conn.commit()
+        self.assertEqual([r["id"] for r in self.db.get_questions()],
+                         [high, mid, low, done])
+
+    def test_newest_first_breaks_priority_ties(self):
+        older = self.db.add_question(quote="旧", priority=1)
+        newer = self.db.add_question(quote="新", priority=1)
+        self.db.conn.execute("UPDATE questions SET created_at=? WHERE id=?",
+                             ("2026-10-01 09:00:00", older))
+        self.db.conn.commit()
+        self.assertEqual([r["id"] for r in self.db.get_questions()],
+                         [newer, older])
+
+    def test_same_timestamp_uses_id_descending(self):
+        first = self.db.add_question(quote="一")
+        second = self.db.add_question(quote="二")
+        for qid in (first, second):
+            self.db.conn.execute("UPDATE questions SET created_at=? WHERE id=?",
+                                 ("2026-10-05 10:00:00", qid))
+        self.db.conn.commit()
+        self.assertEqual([r["id"] for r in self.db.get_questions()],
+                         [second, first])
+
+    def test_questions_survive_reopening(self):
+        qid = self.db.add_question(url="https://e.com", quote="句子",
+                                   priority=2, anchor='{"q":"句子"}')
+        self.db.set_question_resolved(qid, True)
+        before = self.stored_question(qid)
+        self.db.close()
+        self.db = Database(self.db_path)
+        self.assertEqual(self.stored_question(qid), before)
+        self.assertEqual(self.db.count_questions(resolved=True), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

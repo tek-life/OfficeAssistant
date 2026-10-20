@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { margin: 0; width: 320px; font-family: "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+           font-size: 13px; color: #242424; background: #ffffff; }
+    .wrap { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    h1 { margin: 0; font-size: 14px; font-weight: 600; }
+    .quote { padding: 8px 10px; background: #f5f8fb; border: 1px solid #e2e8f0;
+             border-radius: 8px; color: #334155; max-height: 96px; overflow: auto; }
+    label { font-size: 12px; color: #707070; }
+    textarea, input, select { width: 100%; box-sizing: border-box; font: inherit; color: #242424;
+             background: #fafafa; border: 1px solid #e5e5e5; border-radius: 6px; padding: 6px; }
+    textarea { resize: vertical; min-height: 52px; }
+    .row { display: flex; gap: 8px; }
+    .row > div { flex: 1; }
+    button { font: inherit; color: #ffffff; background: #242424; border: 0; border-radius: 6px;
+             padding: 8px; cursor: pointer; }
+    button:hover { background: #3b3b3b; }
+    .status { font-size: 12px; color: #2f6b28; min-height: 16px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>标记阅读疑难</h1>
+    <div id="quote" class="quote">（正在读取选中文字…）</div>
+    <div>
+      <label for="question">我的问题（可选）</label>
+      <textarea id="question" placeholder="哪里不懂？例如：这里的因果是怎么成立的？"></textarea>
+    </div>
+    <div class="row">
+      <div>
+        <label for="category">分类（可选）</label>
+        <input id="category" type="text" placeholder="概念 / 逻辑 / 术语" />
+      </div>
+      <div>
+        <label for="priority">优先级</label>
+        <select id="priority">
+          <option value="0">普通</option>
+          <option value="1">重要</option>
+          <option value="2">关键</option>
+        </select>
+      </div>
+    </div>
+    <button id="mark">标记疑难</button>
+    <div id="status" class="status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

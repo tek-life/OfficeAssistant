@@ -34,6 +34,6 @@ if errorlevel 1 (
 
 echo.
 echo  完成！可执行文件位于: dist\OfficeAssistant.exe
-echo  数据（SQLite）会在首次运行时自动生成于 data\ 目录。
+echo  数据（SQLite）会在首次运行时自动生成于 db\ 目录。
 echo ========================================
 pause

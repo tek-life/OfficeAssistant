@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "办公助手 · 阅读疑难",
+  "version": "1.0.0",
+  "description": "把网页上不懂的句子标记为阅读疑难，汇总到「办公助手」桌面应用，并可一键跳回原文高亮。",
+  "permissions": ["contextMenus", "storage", "tabs", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:8765/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "标记阅读疑难"
+  }
+}
