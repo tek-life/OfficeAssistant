@@ -352,6 +352,41 @@
     }
   }
 
+  // 高亮累积：每次跳转添加一个，不替换旧的。用户可点击删除。
+  // 使用 anchor 的 quote+offset 作为 key，同一高亮不重复添加。
+  const activeHighlights = new Map();
+
+  function anchorKey(anchor) {
+    if (!anchor) return null;
+    return (anchor.q || '').slice(0, 80) + '|' + (anchor.o || 0);
+  }
+
+  function rebuildHighlight() {
+    if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
+      const ranges = Array.from(activeHighlights.values()).map(h => h.range);
+      if (ranges.length === 0) {
+        CSS.highlights.delete('oaq');
+      } else {
+        CSS.highlights.set('oaq', new Highlight(...ranges));
+      }
+    }
+    rebuildWrappedMarks();
+  }
+
+  function rebuildWrappedMarks() {
+    clearWrappedMarks();
+    for (const { range } of activeHighlights.values()) {
+      markRange(range);
+    }
+  }
+
+  function removeHighlightByAnchor(anchor) {
+    const key = anchorKey(anchor);
+    if (!key) return;
+    activeHighlights.delete(key);
+    rebuildHighlight();
+  }
+
   function paintHighlight(range, anchor) {
     ensureHighlightStyle();
     const key = anchorKey(anchor);
