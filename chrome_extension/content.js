@@ -202,6 +202,7 @@
   let highlightTimer = null;
 
   function clearHighlight() {
+    endLanding();
     if (highlightTimer) {
       clearTimeout(highlightTimer);
       highlightTimer = null;
@@ -234,11 +235,40 @@
     return null;
   }
 
-  // 让高亮区间本身滚入视口。不能对 startContainer.parentElement 直接调
-  // scrollIntoView：这个父元素可能是包裹整节的巨大 <section>（动辄上万像
-  // 素高），按 block:"center" 居中它会把视口带到离目标很远的位置。这里改
-  // 用区间自身的矩形计算滚动量，并把区间顶部放在视口约 1/3 处。
-  function scrollRangeIntoView(range) {
+  // 目标区间顶部对齐到视口高度的这个比例处，让目标上方留出阅读上下文
+  const LANDING_RATIO = 0.33;
+  const SETTLE_INTERVAL_MS = 80;
+  const SETTLE_MIN_MS = 1200;
+  const SETTLE_MAX_MS = 3000;
+  const SETTLE_TOLERANCE_PX = 2;
+  const SETTLE_STABLE_TICKS = 3;
+
+  let settleTimer = null;
+  let settleStartedAt = 0;
+  let settleStableTicks = 0;
+  let settleLastTarget = null;
+  let activeAnchor = null;
+  let activeRange = null;
+
+  function stopSettleTimer() {
+    if (settleTimer) {
+      clearTimeout(settleTimer);
+      settleTimer = null;
+    }
+    settleStableTicks = 0;
+    settleLastTarget = null;
+  }
+
+  // 结束本次跳转的落点校正：用户接管滚动、或高亮结束时调用
+  function endLanding() {
+    stopSettleTimer();
+    activeAnchor = null;
+    activeRange = null;
+  }
+
+  // 区间相对其滚动容器的落点信息：drift 是当前位置与目标的像素差，
+  // apply 把区间顶部推到视口约 1/3 处并返回目标滚动量
+  function landingMetrics(range) {
     const container = range.startContainer;
     const el = container.nodeType === 1 ? container : container.parentElement;
     let rect = null;
@@ -247,24 +277,103 @@
     } catch (e) {
       rect = null;
     }
-    if (!rect || (!rect.height && !rect.width)) {
-      if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-      return;
-    }
+    if (!rect || (!rect.height && !rect.width)) return null;
     const scroller = scrollableAncestor(el);
     if (scroller) {
       const box = scroller.getBoundingClientRect();
-      const top = scroller.scrollTop + rect.top - box.top - scroller.clientHeight * 0.33;
-      scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-    } else {
-      const top = window.scrollY + rect.top - window.innerHeight * 0.33;
-      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+      const offset = scroller.clientHeight * LANDING_RATIO;
+      return {
+        drift: rect.top - box.top - offset,
+        apply(behavior) {
+          const top = Math.max(0, scroller.scrollTop + rect.top - box.top - offset);
+          scroller.scrollTo({ top, behavior });
+          return top;
+        },
+      };
+    }
+    const offset = window.innerHeight * LANDING_RATIO;
+    return {
+      drift: rect.top - offset,
+      apply(behavior) {
+        const top = Math.max(0, window.scrollY + rect.top - offset);
+        window.scrollTo({ top, behavior });
+        return top;
+      },
+    };
+  }
+
+  // 用整段瞬时定位而不是平滑滚动：页面自身的 scroll-behavior:smooth 会把
+  // 滚动变成一段动画，动画途中任何布局变动或再次滚动都会把它打断、停在半
+  // 路，于是高亮落在视口之外，看起来像"跳到了上一段"。
+  function scrollRangeIntoView(range) {
+    const metrics = landingMetrics(range);
+    if (metrics) {
+      metrics.apply("instant");
+      return;
+    }
+    const container = range.startContainer;
+    const el = container.nodeType === 1 ? container : container.parentElement;
+    if (el) el.scrollIntoView({ block: "center", behavior: "instant" });
+  }
+
+  // 跳转后短暂跟踪落点：页面（字体、图片解码、目录展开）继续改变布局时按
+  // 当前矩形重新校正；区间失效则按锚点重新定位；位置稳定即收工。
+  function settleLanding(anchor, range) {
+    stopSettleTimer();
+    activeAnchor = anchor || null;
+    activeRange = range;
+    settleStartedAt = Date.now();
+    const tick = () => {
+      settleTimer = null;
+      const elapsed = Date.now() - settleStartedAt;
+      if (elapsed > SETTLE_MAX_MS) {
+        stopSettleTimer();
+        return;
+      }
+      let metrics = landingMetrics(activeRange);
+      if (!metrics && activeAnchor) {
+        const fresh = locateRange(activeAnchor);
+        if (fresh) {
+          activeRange = fresh;
+          paintHighlight(fresh);
+          metrics = landingMetrics(fresh);
+        }
+      }
+      if (!metrics) {
+        if (elapsed > SETTLE_MIN_MS) {
+          stopSettleTimer();
+          return;
+        }
+      } else if (Math.abs(metrics.drift) <= SETTLE_TOLERANCE_PX) {
+        settleStableTicks += 1;
+        if (settleStableTicks >= SETTLE_STABLE_TICKS && elapsed >= SETTLE_MIN_MS) {
+          stopSettleTimer();
+          return;
+        }
+      } else {
+        settleStableTicks = 0;
+        const target = metrics.apply("instant");
+        if (target === settleLastTarget) {
+          stopSettleTimer();
+          return;
+        }
+        settleLastTarget = target;
+      }
+      settleTimer = setTimeout(tick, SETTLE_INTERVAL_MS);
+    };
+    tick();
+  }
+
+  // 布局再次变化时（字体就绪、页面 load 完成）若仍在本轮跳转内就再校正一次
+  function realignLanding() {
+    if (!activeRange || !activeAnchor) return;
+    const metrics = landingMetrics(activeRange);
+    if (metrics && Math.abs(metrics.drift) > SETTLE_TOLERANCE_PX) {
+      metrics.apply("instant");
     }
   }
 
-  function highlightRange(range) {
-    clearHighlight();
-    scrollRangeIntoView(range);
+  function paintHighlight(range) {
     if (window.CSS && CSS.highlights && typeof Highlight === "function") {
       ensureHighlightStyle();
       CSS.highlights.set("oaq", new Highlight(range));
@@ -272,6 +381,13 @@
       markRange(range);
     }
     scheduleHighlightClear();
+  }
+
+  function highlightRange(range, anchor) {
+    clearHighlight();
+    scrollRangeIntoView(range);
+    paintHighlight(range);
+    settleLanding(anchor, range);
     return true;
   }
 
@@ -330,7 +446,7 @@
     const range = locateRange(anchor);
     if (range) {
       stopRetry();
-      highlightRange(range);
+      highlightRange(range, anchor);
       return true;
     }
     if (retryLeft > 0) {
@@ -356,7 +472,23 @@
     });
   }
 
+  // 用户自己开始滚动就把视口交还给用户，不再把位置抢回来
+  const SCROLL_KEYS = {
+    ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1,
+    PageUp: 1, PageDown: 1, Home: 1, End: 1, " ": 1,
+  };
+  window.addEventListener("wheel", endLanding, { passive: true });
+  window.addEventListener("touchstart", endLanding, { passive: true });
+  window.addEventListener("keydown", (e) => {
+    if (SCROLL_KEYS[e.key]) endLanding();
+  });
+  window.addEventListener("load", realignLanding);
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(realignLanding).catch(() => {});
+  }
+
   window.addEventListener("hashchange", applyJump);
   window.addEventListener("pageshow", applyJump);
   applyJump();
 })();
+
