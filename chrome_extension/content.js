@@ -218,11 +218,53 @@
     }, HIGHLIGHT_MS);
   }
 
-  function highlightRange(range) {
-    clearHighlight();
+  // 返回包含目标元素的可滚动祖先（内容确实超出时才滚动）；没有则返回
+  // null，表示由整页窗口滚动。
+  function scrollableAncestor(el) {
+    let node = el;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = window.getComputedStyle(node);
+      const oy = style.overflowY;
+      if ((oy === "auto" || oy === "scroll" || oy === "overlay") &&
+          node.scrollHeight > node.clientHeight + 1) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  // 让高亮区间本身滚入视口。不能对 startContainer.parentElement 直接调
+  // scrollIntoView：这个父元素可能是包裹整节的巨大 <section>（动辄上万像
+  // 素高），按 block:"center" 居中它会把视口带到离目标很远的位置。这里改
+  // 用区间自身的矩形计算滚动量，并把区间顶部放在视口约 1/3 处。
+  function scrollRangeIntoView(range) {
     const container = range.startContainer;
     const el = container.nodeType === 1 ? container : container.parentElement;
-    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    let rect = null;
+    try {
+      rect = range.getBoundingClientRect();
+    } catch (e) {
+      rect = null;
+    }
+    if (!rect || (!rect.height && !rect.width)) {
+      if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    const scroller = scrollableAncestor(el);
+    if (scroller) {
+      const box = scroller.getBoundingClientRect();
+      const top = scroller.scrollTop + rect.top - box.top - scroller.clientHeight * 0.33;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    } else {
+      const top = window.scrollY + rect.top - window.innerHeight * 0.33;
+      window.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }
+  }
+
+  function highlightRange(range) {
+    clearHighlight();
+    scrollRangeIntoView(range);
     if (window.CSS && CSS.highlights && typeof Highlight === "function") {
       ensureHighlightStyle();
       CSS.highlights.set("oaq", new Highlight(range));
