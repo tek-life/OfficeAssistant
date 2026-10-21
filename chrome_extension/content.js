@@ -197,29 +197,8 @@
     }
   }
 
-  // 每次跳转只保留一份高亮：先清掉上一次的高亮和它的清除定时器，
-  // 否则旧定时器会在 HIGHLIGHT_MS 后把新跳转的高亮一并抹掉。
-  let highlightTimer = null;
 
-  function clearHighlight() {
-    endLanding();
-    if (highlightTimer) {
-      clearTimeout(highlightTimer);
-      highlightTimer = null;
-    }
-    if (window.CSS && CSS.highlights) CSS.highlights.delete("oaq");
-    clearWrappedMarks();
-  }
-
-  function scheduleHighlightClear() {
-    if (highlightTimer) clearTimeout(highlightTimer);
-    highlightTimer = setTimeout(() => {
-      highlightTimer = null;
-      clearHighlight();
-    }, HIGHLIGHT_MS);
-  }
-
-  // 返回包含目标元素的可滚动祖先（内容确实超出时才滚动）；没有则返回
+// 返回包含目标元素的可滚动祖先（内容确实超出时才滚动）；没有则返回
   // null，表示由整页窗口滚动。
   function scrollableAncestor(el) {
     let node = el;
@@ -373,20 +352,18 @@
     }
   }
 
-  function paintHighlight(range) {
-    if (window.CSS && CSS.highlights && typeof Highlight === "function") {
-      ensureHighlightStyle();
-      CSS.highlights.set("oaq", new Highlight(range));
-    } else {
-      markRange(range);
+  function paintHighlight(range, anchor) {
+    ensureHighlightStyle();
+    const key = anchorKey(anchor);
+    if (key) {
+      activeHighlights.set(key, { range, anchor });
     }
-    scheduleHighlightClear();
+    rebuildHighlight();
   }
 
   function highlightRange(range, anchor) {
-    clearHighlight();
     scrollRangeIntoView(range);
-    paintHighlight(range);
+    paintHighlight(range, anchor);
     settleLanding(anchor, range);
     return true;
   }
@@ -458,7 +435,6 @@
 
   function applyJump() {
     stopRetry();
-    clearHighlight();
     retryLeft = JUMP_RETRY_LIMIT;
     tryJump();
   }
@@ -487,8 +463,49 @@
     document.fonts.ready.then(realignLanding).catch(() => {});
   }
 
+  // ɾҳϵ highlighṫ ߵ highlight ʱɾ
+  document.addEventListener("click", (e) => {
+    if (activeHighlights.size === 0) return;
+    
+    // ȡõλõ range
+    let range = null;
+    if (document.caretRangeFromPoint) {
+      range = document.caretRangeFromPoint(e.clientX, e.clientY);
+    } else if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(e.clientX, e.clientY);
+      if (pos) {
+        range = document.createRange();
+        range.setStart(pos.offsetNode, pos.offset);
+        range.setEnd(pos.offsetNode, pos.offset);
+      }
+    }
+    if (!range) return;
+    
+    // Ƿĳ highlight 
+    for (const [key, { range: hlRange }] of activeHighlights) {
+      try {
+        const rect = hlRange.getBoundingClientRect();
+        if (rect && 
+            e.clientY >= rect.top && e.clientY <= rect.bottom &&
+            e.clientX >= rect.left && e.clientX <= rect.right) {
+          activeHighlights.delete(key);
+          rebuildHighlight();
+          break;
+        }
+      } catch (err) {
+        // range ѾЧ
+      }
+    }
+  });
+
   window.addEventListener("hashchange", applyJump);
   window.addEventListener("pageshow", applyJump);
   applyJump();
 })();
+
+
+
+
+
+
 
