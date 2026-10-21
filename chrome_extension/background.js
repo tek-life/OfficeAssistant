@@ -79,3 +79,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   return false;
 });
+
+
+
+
+// 复用已打开的标签页：只在新标签首次导航时处理
+const newTabs = new Set();
+
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.id) newTabs.add(tab.id);
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // 只处理新创建的标签，且只在 URL 首次确定时
+  if (!newTabs.has(tabId) || !changeInfo.url) return;
+  
+  const hashIndex = changeInfo.url.indexOf('#');
+  if (hashIndex === -1) {
+    newTabs.delete(tabId);
+    return;
+  }
+  
+  const baseUrl = changeInfo.url.substring(0, hashIndex);
+  newTabs.delete(tabId);
+  
+  chrome.tabs.query({}, (tabs) => {
+    const existingTab = tabs.find(t => 
+      t.id !== tabId && 
+      t.url && 
+      t.url.split('#')[0] === baseUrl
+    );
+    
+    if (existingTab) {
+      chrome.tabs.update(existingTab.id, { url: changeInfo.url, active: true }, () => {
+        chrome.windows.update(existingTab.windowId, { focused: true });
+        chrome.tabs.remove(tabId);
+      });
+    }
+  });
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  newTabs.delete(tabId);
+});
