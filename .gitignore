@@ -28,3 +28,6 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Scratch / intermediate outputs (previews, temp exports, helper scripts)
+tmp/
