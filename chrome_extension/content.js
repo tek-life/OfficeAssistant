@@ -437,6 +437,26 @@
     rebuildHighlight();
   }
 
+  // 标记疑难时立即高亮选中句：只画高亮，不滚动、不抢用户视口。
+  // 优先按锚点重定位；定位不到（选区还在）时退回当前选区。
+  function highlightNow(anchor) {
+    if (!anchor || !anchor.q) {
+      const payload = buildPayload();
+      anchor = payload && payload.anchor;
+    }
+    if (!anchor || !anchor.q) return false;
+    let range = locateRange(anchor);
+    if (!range) {
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+        range = sel.getRangeAt(0).cloneRange();
+      }
+    }
+    if (!range) return false;
+    paintHighlight(range, anchor);
+    return true;
+  }
+
   function highlightRange(range, anchor) {
     scrollRangeIntoView(range);
     paintHighlight(range, anchor);
@@ -526,6 +546,9 @@
         sendResponse({ ok: true, payload: buildPayload() });
       } else if (msg && msg.type === "oaq:jump") {
         applyJump(msg.anchor || null);
+        sendResponse({ ok: true });
+      } else if (msg && msg.type === "oaq:highlight") {
+        highlightNow(msg.anchor || null);
         sendResponse({ ok: true });
       }
       return true;

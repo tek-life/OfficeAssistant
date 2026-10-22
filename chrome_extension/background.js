@@ -37,6 +37,15 @@ async function postQuestion(body) {
   return resp.json();
 }
 
+// 标记成功后立刻让页面把选中句高亮起来（只画高亮，不滚动、不抢视口）。
+// 内容脚本未注入或定位失败时静默忽略，之后回跳仍会重新定位。
+function highlightInTab(tabId, anchor) {
+  if (tabId == null || !anchor || !anchor.q) return;
+  chrome.tabs.sendMessage(tabId, { type: "oaq:highlight", anchor }, () => {
+    void chrome.runtime.lastError;
+  });
+}
+
 async function markSelection(tab, extra) {
   const payload = await selectionPayload(tab && tab.id);
   const body = Object.assign(
@@ -48,6 +57,8 @@ async function markSelection(tab, extra) {
     flashBadge("!", "#9a2b2b");
     return { ok: false, error: "没有可记录的内容" };
   }
+  // 先高亮再投递：即使服务短暂不可用，用户也能立刻看到标记结果。
+  highlightInTab(tab && tab.id, body.anchor);
   try {
     const out = await postQuestion(body);
     flashBadge("\u2713", "#2f6b28");
