@@ -1651,7 +1651,8 @@ QWidget#questionBubble:hover {
 QLabel#questionBubbleIcon {
     background: transparent;
     color: #e5484d;
-    font-size: 23px;
+    font-family: "Segoe UI", "Microsoft YaHei UI";
+    font-size: 24px;
     font-weight: 600;
 }
 QLabel#questionCountBadge {
@@ -1710,7 +1711,7 @@ class QuestionBubble(QWidget):
         icon_layout.setContentsMargins(0, 0, 0, 0)
         icon_layout.setSpacing(0)
 
-        self.icon_label = QLabel("？", self.card)
+        self.icon_label = QLabel("?", self.card)
         self.icon_label.setObjectName("questionBubbleIcon")
         self.icon_label.setAlignment(Qt.AlignCenter)
         self.icon_label.setFont(QFont(BASE_FONT, 13, QFont.Weight.DemiBold))
