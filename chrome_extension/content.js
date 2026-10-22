@@ -166,7 +166,6 @@
   }
 
   function markRange(range) {
-    clearWrappedMarks();
     const nodes = [];
     if (range.commonAncestorContainer.nodeType === 3) {
       nodes.push(range.commonAncestorContainer);
@@ -314,7 +313,7 @@
         const fresh = locateRange(activeAnchor);
         if (fresh) {
           activeRange = fresh;
-          paintHighlight(fresh);
+          paintHighlight(fresh, activeAnchor);
           metrics = landingMetrics(fresh);
         }
       }
@@ -361,22 +360,64 @@
     return (anchor.q || '').slice(0, 80) + '|' + (anchor.o || 0);
   }
 
+  function cssHighlightReady() {
+    return !!(window.CSS && CSS.highlights && typeof Highlight === 'function');
+  }
+
+  function rangeIsLive(range) {
+    try {
+      const node = range && range.startContainer;
+      return !!(node && window.document.contains(node));
+    } catch (err) {
+      return false;
+    }
+  }
+
+  // 页面自身重排/重渲染（字体就绪、目录展开、SPA 切换）会废弃旧 Range：
+  // 节点被替换后既不在文档里、也无法绘制，能按锚点重定位的就重定位，
+  // 定位不到的直接丢弃，避免一条坏 Range 拖垮整批高亮。
+  function refreshStaleRanges() {
+    for (const [key, entry] of Array.from(activeHighlights)) {
+      if (rangeIsLive(entry.range)) continue;
+      const fresh = entry.anchor ? locateRange(entry.anchor) : null;
+      if (fresh) entry.range = fresh;
+      else activeHighlights.delete(key);
+    }
+  }
+
   function rebuildHighlight() {
-    if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
-      const ranges = Array.from(activeHighlights.values()).map(h => h.range);
-      if (ranges.length === 0) {
-        CSS.highlights.delete('oaq');
-      } else {
-        CSS.highlights.set('oaq', new Highlight(...ranges));
+    if (cssHighlightReady()) {
+      // CSS Custom Highlight API 可用时只更新注册表，绝不改动 DOM：
+      // splitText / normalize 会改写文本节点，已存的 Range 会被重新锚定，
+      // 轻则高亮漂移，重则收成空区间，导致后续条目高亮全部失效。
+      refreshStaleRanges();
+      const ranges = Array.from(activeHighlights.values())
+        .map(entry => entry.range)
+        .filter(range => range && rangeIsLive(range) && !range.collapsed);
+      try {
+        if (ranges.length === 0) {
+          CSS.highlights.delete('oaq');
+        } else {
+          CSS.highlights.set('oaq', new Highlight(...ranges));
+        }
+      } catch (err) {
+        // 极端情况下注册失败，也不能中断后续的高亮流程
       }
+      return;
     }
     rebuildWrappedMarks();
   }
 
   function rebuildWrappedMarks() {
     clearWrappedMarks();
-    for (const { range } of activeHighlights.values()) {
-      markRange(range);
+    for (const entry of activeHighlights.values()) {
+      try {
+        const fresh = entry.anchor ? locateRange(entry.anchor) : null;
+        if (fresh) entry.range = fresh;
+        markRange(entry.range);
+      } catch (err) {
+        // Range 已失效，跳过该条
+      }
     }
   }
 
@@ -443,6 +484,9 @@
   const JUMP_RETRY_LIMIT = 12;
   let retryTimer = null;
   let retryLeft = 0;
+  // 本次跳转要用的锚点：来自片段（hashchange / 首次加载），
+  // 或由后台复用标签页时通过 oaq:jump 消息直接投递。
+  let pendingAnchor = null;
 
   function stopRetry() {
     if (retryTimer) {
@@ -453,7 +497,7 @@
   }
 
   function tryJump() {
-    const anchor = anchorFromHash();
+    const anchor = pendingAnchor || anchorFromHash();
     if (!anchor || !anchor.q) return true;
     const range = locateRange(anchor);
     if (range) {
@@ -468,7 +512,9 @@
     return false;
   }
 
-  function applyJump() {
+  // 显式传入锚点（后台复用标签页时走这条路）；不传则读 URL 片段。
+  function applyJump(anchor) {
+    pendingAnchor = anchor && typeof anchor.q === "string" ? anchor : null;
     stopRetry();
     retryLeft = JUMP_RETRY_LIMIT;
     tryJump();
@@ -478,6 +524,9 @@
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg && msg.type === "oaq:getSelection") {
         sendResponse({ ok: true, payload: buildPayload() });
+      } else if (msg && msg.type === "oaq:jump") {
+        applyJump(msg.anchor || null);
+        sendResponse({ ok: true });
       }
       return true;
     });
@@ -498,11 +547,11 @@
     document.fonts.ready.then(realignLanding).catch(() => {});
   }
 
-  // ɾҳϵ highlighṫ ߵ highlight ʱɾ
+  // 点击页面上的高亮即可删除该条 highlight
   document.addEventListener("click", (e) => {
     if (activeHighlights.size === 0) return;
     
-    // ȡõλõ range
+    // 取点击位置的 range
     let range = null;
     if (document.caretRangeFromPoint) {
       range = document.caretRangeFromPoint(e.clientX, e.clientY);
@@ -516,25 +565,23 @@
     }
     if (!range) return;
     
-    // Ƿĳ highlight 
+    // 判断点击点是否落在某个 highlight 区间内
     for (const [key, { range: hlRange }] of activeHighlights) {
       try {
-        const rect = hlRange.getBoundingClientRect();
-        if (rect && 
-            e.clientY >= rect.top && e.clientY <= rect.bottom &&
-            e.clientX >= rect.left && e.clientX <= rect.right) {
+        if (hlRange.isPointInRange &&
+            hlRange.isPointInRange(range.startContainer, range.startOffset)) {
           activeHighlights.delete(key);
           rebuildHighlight();
           break;
         }
       } catch (err) {
-        // range ѾЧ
+        // range 已失效
       }
     }
   });
 
-  window.addEventListener("hashchange", applyJump);
-  window.addEventListener("pageshow", applyJump);
+  window.addEventListener("hashchange", () => applyJump());
+  window.addEventListener("pageshow", () => applyJump());
   applyJump();
 })();
 
