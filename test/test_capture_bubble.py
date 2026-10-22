@@ -96,7 +96,7 @@ class BubbleWidgetTests(unittest.TestCase):
         self.assertEqual(self.bubble._state, BUBBLE_ERROR)
         self.bubble._reset()
         self.assertEqual(self.bubble._state, BUBBLE_IDLE)
-        self.assertEqual(self.bubble.status_label.text(), "")
+        self.assertEqual(self.bubble.status_label.text(), "记录选中内容")
 
     def test_clamp_pulls_bubble_back_on_screen(self):
         self.bubble.move(-5000, -5000)

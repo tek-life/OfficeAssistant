@@ -30,10 +30,10 @@ from PySide6.QtGui import (QColor, QDesktopServices, QFont, QFontMetrics, QPaint
                            QPalette, QPen, QTextCharFormat, QTextCursor)
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+    QApplication, QAbstractButton, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QStackedWidget, QTextEdit, QPlainTextEdit, QListWidget,
     QListWidgetItem, QLineEdit, QMessageBox, QCheckBox, QTabBar, QSizePolicy,
-    QCalendarWidget, QComboBox, QMenu, QSpinBox,
+    QCalendarWidget, QComboBox, QMenu, QSpinBox, QGraphicsDropShadowEffect,
 )
 
 BASE_FONT = "Microsoft YaHei UI"
@@ -95,6 +95,10 @@ QLineEdit#todoEntry { color: %(text)s; background: transparent; border: 1px soli
     border-radius: 5px; padding: 5px; selection-background-color: %(selected)s;
     selection-color: %(text)s; }
 QLineEdit#todoEntry:focus { border-color: %(secondary)s; }
+QLineEdit#todoEdit { color: %(text)s; background: %(sidebar)s; border: 1px solid %(border)s;
+    border-radius: 5px; padding: 2px 6px; selection-background-color: %(selected)s;
+    selection-color: %(text)s; }
+QLineEdit#todoEdit:focus { border-color: %(secondary)s; }
 QTextEdit, QPlainTextEdit { color: %(text)s; background: %(surface)s; border: 0;
     selection-background-color: %(selected)s; selection-color: %(text)s; }
 QPlainTextEdit:focus { border-bottom: 1px solid %(border)s; }
@@ -148,6 +152,48 @@ class TodoCheckBox(QCheckBox):
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(QColor(COLORS["secondary"]), 1, Qt.DotLine))
             painter.drawRoundedRect(QRectF(0.5, 0.5, 23, 23), 5, 5)
+
+
+class TodoEditLine(QLineEdit):
+    """待办行内编辑框：回车或失焦提交，Esc 取消。"""
+
+    canceled = Signal()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            self.canceled.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class TodoRowWidget(QWidget):
+    """待办行容器：双击文本区进入行内编辑。
+
+    文本标签对鼠标透明，双击会落到本容器上；复选框和操作按钮各自处理事件，
+    所以双击它们不会误触发编辑。子控件引用由列表刷新时挂载。
+    """
+
+    def __init__(self, todo_id, on_double_click=None, parent=None):
+        super().__init__(parent)
+        self.todo_id = todo_id
+        self.on_double_click = on_double_click
+        self.item = None
+        self.label = None
+        self.editor = None
+        self.checkbox = None
+        self.raw_text = ""
+        self.priority = 0
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton and self.on_double_click is not None:
+            # 复选框和操作按钮各自处理双击；只有文本区才进入行内编辑
+            child = self.childAt(event.position().toPoint())
+            if not isinstance(child, QAbstractButton):
+                self.on_double_click(self.todo_id)
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
 
 
 class ElidedLabel(QLabel):
@@ -977,6 +1023,8 @@ class TodoEditorWindow(ChromeWindow):
         self.db = db
         self.on_changed = on_changed
         self._closed = False
+        self._editing_id = None
+        self._row_widgets = {}
         self._build_ui()
         self.refresh_list()
 
@@ -1099,7 +1147,9 @@ class TodoEditorWindow(ChromeWindow):
         self.empty_hint.setText("已完成的事项归档后，会留在这里。" if archived else
                                 "在下方记下下一件要做的事。")
         self.input_hint.setText("已归档事项会保留，可随时恢复到待办列表。" if archived else
-                                "回车添加 · 完成的事项可以归档，随时回看")
+                                "回车添加 · 双击文字修改 · 完成后可归档回看")
+        self._row_widgets = {}
+        self._editing_id = None
         self.list.clear()
         self.content_stack.setCurrentWidget(self.list if rows else self.empty_state)
         for r in rows:
@@ -1108,9 +1158,12 @@ class TodoEditorWindow(ChromeWindow):
             item.setData(Qt.AccessibleTextRole, r["text"])
             self.list.addItem(item)
 
-            row = QWidget()
+            row = TodoRowWidget(r["id"], self._begin_edit)
             row.setObjectName("todoRow")
             row.setFont(self.list.font())
+            row.item = item
+            row.raw_text = r["text"]
+            row.priority = r["priority"]
             layout = QHBoxLayout(row)
             layout.setContentsMargins(6, 14, 6, 14)
             layout.setSpacing(10)
@@ -1124,6 +1177,7 @@ class TodoEditorWindow(ChromeWindow):
                 lambda checked=False, tid=r["id"]: self._toggle_todo(tid)
             )
             layout.addWidget(checkbox, 0, Qt.AlignTop)
+            row.checkbox = checkbox
 
             text_layout = QVBoxLayout()
             text_layout.setSpacing(4)
@@ -1139,6 +1193,23 @@ class TodoEditorWindow(ChromeWindow):
             if r["done"]:
                 label.setProperty("tone", "secondary")
             text_layout.addWidget(label)
+            row.label = label
+
+            editor = TodoEditLine()
+            editor.setObjectName("todoEdit")
+            editor.setFont(QFont(self.list.font()))
+            editor.setAccessibleName(f"编辑待办：{r['text']}")
+            editor.setPlaceholderText("修改这件事…")
+            editor.setFixedHeight(QFontMetrics(editor.font()).height() + 8)
+            editor.editingFinished.connect(
+                lambda tid=r["id"]: self._commit_edit(tid)
+            )
+            editor.canceled.connect(
+                lambda tid=r["id"]: self._cancel_edit(tid)
+            )
+            editor.hide()
+            text_layout.addWidget(editor)
+            row.editor = editor
 
             created_label = QLabel(f"创建于 {r['created_at'][:16]}")
             created_label.setFont(QFont(BASE_FONT, 9))
@@ -1162,8 +1233,14 @@ class TodoEditorWindow(ChromeWindow):
                 )
                 layout.addWidget(button)
 
+            # 预留编辑框显示时的高度，双击进入编辑时行高不跳动、内容不被裁切
+            label.hide()
+            editor.show()
             item.setSizeHint(row.sizeHint())
+            editor.hide()
+            label.show()
             self.list.setItemWidget(item, row)
+            self._row_widgets[r["id"]] = row
             if r["id"] == selected_id:
                 self.list.setCurrentItem(item)
             if r["id"] == focused_id:
@@ -1189,6 +1266,64 @@ class TodoEditorWindow(ChromeWindow):
         self.db.restore_todo(todo_id)
         self.refresh_list()
         self._notify()
+
+    def _begin_edit(self, todo_id):
+        """双击待办行进入行内编辑；若已在编辑其它行，先提交再切换。"""
+        if self._editing_id == todo_id:
+            return
+        self._finish_edit()
+        row = self._row_widgets.get(todo_id)
+        if row is None or row.editor is None:
+            return
+        self._editing_id = todo_id
+        row.editor.setText(row.raw_text)
+        row.label.hide()
+        row.editor.show()
+        row.editor.setFocus(Qt.MouseFocusReason)
+        row.editor.selectAll()
+        if row.item is not None:
+            self.list.setCurrentItem(row.item)
+
+    def _commit_edit(self, todo_id):
+        if self._editing_id == todo_id:
+            self._finish_edit()
+
+    def _cancel_edit(self, todo_id):
+        if self._editing_id != todo_id:
+            return
+        self._editing_id = None
+        row = self._row_widgets.get(todo_id)
+        if row is None or row.editor is None:
+            return
+        row.editor.hide()
+        row.label.show()
+
+    def _finish_edit(self):
+        """提交当前行内编辑；文本为空或未改动时只退出编辑。"""
+        if self._editing_id is None:
+            return
+        todo_id = self._editing_id
+        self._editing_id = None
+        row = self._row_widgets.get(todo_id)
+        if row is None or row.editor is None:
+            return
+        text = row.editor.text().strip()
+        row.editor.hide()
+        row.label.show()
+        if text and text != row.raw_text:
+            self.db.update_todo(todo_id, text=text)
+            row.raw_text = text
+            self._apply_row_text(row, text)
+            self._notify()
+
+    def _apply_row_text(self, row, text):
+        suffix = {1: "  ⚑", 2: "  ⚑⚑"}.get(row.priority, "")
+        row.label.setText(f"{text}{suffix}")
+        row.setToolTip(f"<qt>{_html.escape(text)}</qt>")
+        if row.item is not None:
+            row.item.setData(Qt.AccessibleTextRole, text)
+        if row.checkbox is not None:
+            row.checkbox.setAccessibleName(text)
 
     def delete_selected(self):
         selected = self.list.selectedItems()
@@ -1220,16 +1355,24 @@ BUBBLE_OK = "ok"
 BUBBLE_ERROR = "error"
 
 BUBBLE_STYLE = """
-QWidget#captureBubble { background: #fff8db; border: 1px solid #e6c34a;
-    border-radius: 8px; }
-QWidget#captureBubble[state="ok"] { background: #eaf7e6; border-color: #8fc487; }
-QWidget#captureBubble[state="error"] { background: #fdeaea; border-color: #e5a5a5; }
-QLabel#bubbleTitle { color: #7a5c00; font-weight: bold; background: transparent; }
-QWidget#captureBubble[state="ok"] QLabel#bubbleTitle { color: #2f6b28; }
-QWidget#captureBubble[state="error"] QLabel#bubbleTitle { color: #9a2b2b; }
-QLabel#bubbleStatus { color: #8a6f22; background: transparent; }
-QWidget#captureBubble[state="ok"] QLabel#bubbleStatus { color: #3c7a34; }
-QWidget#captureBubble[state="error"] QLabel#bubbleStatus { color: #a84040; }
+QWidget#captureBubble {
+    background: rgba(255, 255, 255, 0.97);
+    border: 1px solid #dcdce3;
+    border-radius: 17px;
+}
+QWidget#captureBubble:hover { background: #ffffff; border-color: #c9cbd2; }
+QLabel#bubbleIcon {
+    background: #f4f4f6;
+    border-radius: 16px;
+    color: #202123;
+    font-size: 14px;
+    font-weight: 600;
+}
+QLabel#bubbleTitle { color: #202123; font-size: 12px; font-weight: 600; background: transparent; }
+QLabel#bubbleStatus { color: #6e6e80; font-size: 10px; background: transparent; }
+QWidget#captureBubble[state="busy"] QLabel#bubbleStatus { color: #6e6e80; }
+QWidget#captureBubble[state="ok"] QLabel#bubbleStatus { color: #0f8a5f; }
+QWidget#captureBubble[state="error"] QLabel#bubbleStatus { color: #c2312b; }
 """
 
 
@@ -1295,29 +1438,57 @@ class CaptureBubble(QWidget):
                             | Qt.WindowStaysOnTopHint
                             | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedSize(104, 58)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(158, 72)
         self.setToolTip("左键：记录选中内容\n右键：更多投递方式\n拖动：移动气泡")
         self._build_ui()
         self._apply_state()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 9, 12, 9)
-        layout.setSpacing(2)
-        self.title_label = QLabel("投递", self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(0)
+
+        self.card = QWidget(self)
+        self.card.setObjectName("captureBubble")
+        self.card.setAttribute(Qt.WA_StyledBackground, True)
+        self.card.setCursor(Qt.PointingHandCursor)
+        root_layout.addWidget(self.card)
+
+        layout = QHBoxLayout(self.card)
+        layout.setContentsMargins(14, 10, 16, 10)
+        layout.setSpacing(10)
+
+        self.icon_label = QLabel("↗", self.card)
+        self.icon_label.setObjectName("bubbleIcon")
+        self.icon_label.setFixedSize(32, 32)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.icon_label)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(1)
+        self.title_label = QLabel("投递", self.card)
         self.title_label.setObjectName("bubbleTitle")
-        self.status_label = QLabel("", self)
+        self.status_label = QLabel("记录选中内容", self.card)
         self.status_label.setObjectName("bubbleStatus")
         self.status_label.setFont(QFont(BASE_FONT, 8))
-        self.status_label.setFixedWidth(self.width() - 24)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.status_label)
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.status_label)
+        layout.addLayout(text_layout)
+
+        self.title_label.setAccessibleName("投递气泡")
+        self.status_label.setAccessibleName("投递状态")
+        shadow = QGraphicsDropShadowEffect(self.card)
+        shadow.setBlurRadius(18)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 64))
+        self.card.setGraphicsEffect(shadow)
 
     def _apply_state(self):
-        self.setProperty("state", self._state)
+        self.card.setProperty("state", self._state)
         self.setStyleSheet(BUBBLE_STYLE)
-        for widget in (self, self.title_label, self.status_label):
+        for widget in (self.card, self.title_label, self.status_label):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
@@ -1340,7 +1511,7 @@ class CaptureBubble(QWidget):
 
     def _reset(self):
         self._state = BUBBLE_IDLE
-        self.status_label.setText("")
+        self.status_label.setText("记录选中内容")
         self._apply_state()
 
     # --- 位置 ---
@@ -1445,10 +1616,21 @@ class CaptureBubble(QWidget):
 # ═══════════════════════════════════════════════════════════
 
 QUESTION_BUBBLE_STYLE = """
-QWidget#questionBubble { background: #e7f1fb; border: 1px solid #7fb0d8;
-    border-radius: 8px; }
-QLabel#questionBubbleTitle { color: #1f5c88; font-weight: bold; background: transparent; }
-QLabel#questionBubbleStatus { color: #3f6f95; background: transparent; }
+QWidget#questionBubble {
+    background: rgba(255, 255, 255, 0.97);
+    border: 1px solid #dcdce3;
+    border-radius: 17px;
+}
+QWidget#questionBubble:hover { background: #ffffff; border-color: #c9cbd2; }
+QLabel#questionBubbleIcon {
+    background: #f4f4f6;
+    border-radius: 16px;
+    color: #202123;
+    font-size: 14px;
+    font-weight: 600;
+}
+QLabel#questionBubbleTitle { color: #202123; font-size: 12px; font-weight: 600; background: transparent; }
+QLabel#questionBubbleStatus { color: #6e6e80; font-size: 10px; background: transparent; }
 """
 
 
@@ -1467,28 +1649,56 @@ class QuestionBubble(QWidget):
         self._press_offset = None
         self._dragged = False
         self._no_activate_applied = False
-        self.setObjectName("questionBubble")
+        self.setObjectName("questionBubbleRoot")
         self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
                             | Qt.WindowStaysOnTopHint
                             | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedSize(96, 58)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(148, 72)
         self.setToolTip("左键：打开疑难清单  右键：更多操作  拖动：移动气泡")
         self._build_ui()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 9, 12, 9)
-        layout.setSpacing(2)
-        self.title_label = QLabel("疑难", self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(0)
+
+        self.card = QWidget(self)
+        self.card.setObjectName("questionBubble")
+        self.card.setAttribute(Qt.WA_StyledBackground, True)
+        self.card.setCursor(Qt.PointingHandCursor)
+        root_layout.addWidget(self.card)
+
+        layout = QHBoxLayout(self.card)
+        layout.setContentsMargins(13, 10, 15, 10)
+        layout.setSpacing(10)
+
+        self.icon_label = QLabel("？", self.card)
+        self.icon_label.setObjectName("questionBubbleIcon")
+        self.icon_label.setFixedSize(32, 32)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.icon_label)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(1)
+        self.title_label = QLabel("疑难", self.card)
         self.title_label.setObjectName("questionBubbleTitle")
-        self.status_label = QLabel("", self)
+        self.status_label = QLabel("", self.card)
         self.status_label.setObjectName("questionBubbleStatus")
         self.status_label.setFont(QFont(BASE_FONT, 8))
-        self.status_label.setFixedWidth(self.width() - 24)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.status_label)
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.status_label)
+        layout.addLayout(text_layout)
+
+        self.title_label.setAccessibleName("疑难气泡")
+        self.status_label.setAccessibleName("疑难状态")
+        shadow = QGraphicsDropShadowEffect(self.card)
+        shadow.setBlurRadius(18)
+        shadow.setXOffset(0)
+        shadow.setYOffset(4)
+        shadow.setColor(QColor(0, 0, 0, 64))
+        self.card.setGraphicsEffect(shadow)
         self.setStyleSheet(QUESTION_BUBBLE_STYLE)
 
     def set_count(self, count):

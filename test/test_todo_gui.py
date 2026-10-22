@@ -8,7 +8,7 @@ from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QHelpEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QLabel, QPushButton, QTabBar, QToolTip,
+    QApplication, QCheckBox, QLabel, QLineEdit, QPushButton, QTabBar, QToolTip,
 )
 
 from db import Database
@@ -79,6 +79,23 @@ class TodoEditorTests(unittest.TestCase):
                   if label.text().startswith("创建于 ")]
         self.assertEqual(len(labels), 1, "每条任务应显示一行创建时间")
         return labels[0]
+
+    def text_label(self, index=0):
+        labels = [label for label in self.row_widget(index).findChildren(QLabel)
+                  if not label.text().startswith("创建于 ")]
+        self.assertEqual(len(labels), 1, "每条任务应显示一行标题")
+        return labels[0]
+
+    def editor(self, index=0):
+        edit = self.row_widget(index).findChild(QLineEdit)
+        self.assertIsNotNone(edit, "每一行都需要一个行内编辑框")
+        return edit
+
+    def start_edit(self, index=0):
+        row = self.row_widget(index)
+        QTest.mouseDClick(row, Qt.LeftButton, pos=row.rect().center())
+        self.app.processEvents()
+        return self.editor(index)
 
     def test_creation_time_uses_stored_local_time_to_the_minute(self):
         todo_id = self.db.add_todo("较早创建的任务")
@@ -482,6 +499,139 @@ class TodoEditorTests(unittest.TestCase):
         self.assertEqual(self.window.list.selectedItems(), [])
         self.assertFalse(self.window.delete_button.isEnabled())
         self.assertEqual([r["done"] for r in self.db.get_todos()], [0, 1])
+
+
+    def test_double_click_text_opens_inline_editor_with_focus(self):
+        self.db.add_todo("原始任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        self.assertTrue(editor.isVisible())
+        self.assertFalse(self.text_label().isVisible())
+        self.assertIs(self.window.focusWidget(), editor)
+        self.assertEqual(editor.text(), "原始任务")
+        self.assertEqual(editor.selectedText(), "原始任务")
+        self.assertEqual(self.notifications, 0)
+
+    def test_enter_commits_inline_edit_and_updates_wallpaper(self):
+        self.db.add_todo("原始任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        editor.setText("改好的任务")
+        QTest.keyClick(editor, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(self.db.get_todos()[0]["text"], "改好的任务")
+        self.assertEqual(self.text_label().text(), "改好的任务")
+        self.assertTrue(self.text_label().isVisible())
+        self.assertFalse(editor.isVisible())
+        self.assertIsNone(self.window._editing_id)
+        self.assertEqual(self.notifications, 1)
+        self.assertEqual(self.window.list.item(0).data(Qt.AccessibleTextRole), "改好的任务")
+
+    def test_escape_cancels_inline_edit_without_writing(self):
+        self.db.add_todo("原始任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        editor.setText("不要保存")
+        QTest.keyClick(editor, Qt.Key_Escape)
+        self.app.processEvents()
+        self.assertEqual(self.db.get_todos()[0]["text"], "原始任务")
+        self.assertEqual(self.text_label().text(), "原始任务")
+        self.assertTrue(self.text_label().isVisible())
+        self.assertFalse(editor.isVisible())
+        self.assertIsNone(self.window._editing_id)
+        self.assertEqual(self.notifications, 0)
+
+    def test_focus_out_commits_inline_edit(self):
+        self.db.add_todo("原始任务")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        editor.setText("失焦保存")
+        self.window.entry.setFocus()
+        self.app.processEvents()
+        self.assertEqual(self.db.get_todos()[0]["text"], "失焦保存")
+        self.assertEqual(self.text_label().text(), "失焦保存")
+        self.assertFalse(editor.isVisible())
+        self.assertEqual(self.notifications, 1)
+
+    def test_blank_edit_keeps_original_task(self):
+        self.db.add_todo("不能清空")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        editor.setText("   ")
+        QTest.keyClick(editor, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(self.db.get_todos()[0]["text"], "不能清空")
+        self.assertEqual(self.text_label().text(), "不能清空")
+        self.assertEqual(self.notifications, 0)
+
+    def test_unchanged_text_does_not_write_or_notify(self):
+        self.db.add_todo("原样返回")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        QTest.keyClick(editor, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertIsNone(self.window._editing_id)
+        self.assertFalse(editor.isVisible())
+        self.assertEqual(self.notifications, 0)
+
+    def test_double_click_checkbox_does_not_open_editor(self):
+        self.db.add_todo("只勾选")
+        self.window.refresh_list()
+        self.app.processEvents()
+        QTest.mouseDClick(self.checkbox(), Qt.LeftButton)
+        self.app.processEvents()
+        self.assertIsNone(self.window._editing_id)
+        self.assertFalse(self.editor().isVisible())
+
+    def test_double_click_archive_button_does_not_open_editor(self):
+        self.add_done("可归档")
+        QTest.mouseDClick(self.row_button("归档"), Qt.LeftButton)
+        self.app.processEvents()
+        self.assertIsNone(self.window._editing_id)
+
+    def test_editing_another_row_commits_previous_one(self):
+        first = self.db.add_todo("第一条")
+        second = self.db.add_todo("第二条")
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit(0)
+        editor.setText("第一条改")
+        reopened = self.start_edit(1)
+        self.assertTrue(reopened.isVisible())
+        self.assertEqual(reopened.text(), "第二条")
+        self.assertEqual(self.window._editing_id, second)
+        texts = {r["id"]: r["text"] for r in self.db.get_todos()}
+        self.assertEqual(texts[first], "第一条改")
+        self.assertEqual(texts[second], "第二条")
+        self.assertEqual(self.notifications, 1)
+
+    def test_inline_edit_works_in_archived_tab(self):
+        self.add_done("归档后改名")
+        self.click(self.row_button("归档"))
+        self.switch_tab(1)
+        editor = self.start_edit()
+        editor.setText("归档后已改")
+        QTest.keyClick(editor, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(self.db.get_todos(archived=True)[0]["text"], "归档后已改")
+        self.assertEqual(self.notifications, 2)
+
+    def test_inline_edit_keeps_priority_flag(self):
+        todo_id = self.db.add_todo("带优先级")
+        self.db.update_todo(todo_id, priority=2)
+        self.window.refresh_list()
+        self.app.processEvents()
+        editor = self.start_edit()
+        editor.setText("改后的高优先")
+        QTest.keyClick(editor, Qt.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(self.text_label().text(), "改后的高优先  ⚑⚑")
 
 
 if __name__ == "__main__":
