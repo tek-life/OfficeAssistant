@@ -40,7 +40,7 @@ import question_server
 from db import Database
 from qt_gui import (QtGuiManager, DiaryWindow, TodoEditorWindow,
                     CaptureBubble, QuestionBubble, QuestionWindow,
-                    BUBBLE_OK, BUBBLE_ERROR, BUBBLE_BUSY)
+                    BubbleGroup, BUBBLE_OK, BUBBLE_ERROR, BUBBLE_BUSY)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -437,6 +437,8 @@ class OfficeAssistant:
         "question_bubble_enabled": True,
         "question_bubble_x": -1,
         "question_bubble_y": -1,
+        "bubble_group_x": -1,
+        "bubble_group_y": -1,
         "question_server_port": 8765,
     }
 
@@ -478,6 +480,7 @@ class OfficeAssistant:
         self._bubble = None
         self._question_win = None
         self._question_bubble = None
+        self._bubble_group = None
         self._question_server = None
         self._hotkey_thread = None
         self._hotkey_thread_id = None
@@ -562,6 +565,8 @@ class OfficeAssistant:
             "question_bubble_enabled": "true",
             "question_bubble_x": "-1",
             "question_bubble_y": "-1",
+            "bubble_group_x": "-1",
+            "bubble_group_y": "-1",
             "question_server_port": "8765",
         }
         for k, v in defaults.items():
@@ -579,6 +584,7 @@ class OfficeAssistant:
                     "pomodoro_interval_minutes", "pomodoro_break_minutes",
                     "capture_bubble_x", "capture_bubble_y",
                     "question_bubble_x", "question_bubble_y",
+                    "bubble_group_x", "bubble_group_y",
                     "question_server_port"}
         bool_keys = {"pomodoro_enabled", "capture_bubble_enabled",
                      "question_bubble_enabled"}
@@ -1117,33 +1123,67 @@ class OfficeAssistant:
         else:
             self._open_capture_bubble()
 
+    def _ensure_bubble_group(self):
+        """在 Qt 线程中创建一次不可见的气泡虚拟框。
+
+        投递与疑难气泡都是这个虚拟框的子控件；拖动任意一个气泡时，
+        整个虚拟框一起移动，两者始终保持同一横坐标。
+        """
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            return self._bubble_group
+
+        self._bubble_group = BubbleGroup(
+            on_capture=self._bubble_capture,
+            on_open_diary=self._open_diary,
+            on_hide_capture=self._hide_capture_bubble,
+            on_open_question=self._open_question_window,
+            on_hide_question=self._hide_question_bubble,
+            on_moved=self._bubble_group_moved,
+        )
+        self._bubble = self._bubble_group.capture_bubble
+        self._question_bubble = self._bubble_group.question_bubble
+        return self._bubble_group
+
+    def _bubble_group_position(self):
+        """取虚拟框位置；首次升级时沿用旧的投递/疑难位置。"""
+        cfg = self.config
+        x = cfg.get("bubble_group_x", -1)
+        y = cfg.get("bubble_group_y", -1)
+        if x < 0:
+            x = cfg.get("capture_bubble_x", -1)
+        if x < 0:
+            x = cfg.get("question_bubble_x", -1)
+        if y < 0:
+            y = cfg.get("capture_bubble_y", -1)
+        if y < 0:
+            y = cfg.get("question_bubble_y", -1)
+        return x, y
+
     def _open_capture_bubble(self):
-        """在 Qt 线程中创建并显示投递气泡。"""
-        if self._bubble is None or not shiboken6.isValid(self._bubble):
-            self._bubble = CaptureBubble(
-                on_capture=self._bubble_capture,
-                on_open_diary=self._open_diary,
-                on_hide=self._hide_capture_bubble,
-                on_moved=self._bubble_moved,
-            )
-        self._bubble.show_at(self.config.get("capture_bubble_x", -1),
-                             self.config.get("capture_bubble_y", -1))
+        """在 Qt 线程中显示投递气泡（与疑难气泡共用一个虚拟框）。"""
+        group = self._ensure_bubble_group()
+        group.show_at(*self._bubble_group_position())
+        group.set_capture_visible(True)
+        group.sync_visibility()
         self.config["capture_bubble_enabled"] = True
         self._save_config()
         self._refresh_tray_menu()
 
     def _hide_capture_bubble(self):
-        """隐藏投递气泡并记住开关状态。"""
-        if self._bubble is not None and shiboken6.isValid(self._bubble):
-            self._bubble.hide()
+        """隐藏投递气泡并记住开关状态；疑难气泡留在虚拟框中。"""
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            self._bubble_group.set_capture_visible(False)
+            self._bubble_group.sync_visibility()
         self.config["capture_bubble_enabled"] = False
         self._save_config()
         self._refresh_tray_menu()
 
-    def _bubble_moved(self, x, y):
-        """气泡被拖动后记住位置。"""
-        self.config["capture_bubble_x"] = int(x)
-        self.config["capture_bubble_y"] = int(y)
+    def _bubble_group_moved(self, x, y):
+        """拖动任一气泡后，记住整个虚拟框的位置。"""
+        self.config["bubble_group_x"] = int(x)
+        self.config["bubble_group_y"] = int(y)
         self._save_config()
 
     def _bubble_capture(self, mode):
@@ -1214,35 +1254,25 @@ class OfficeAssistant:
             self._open_question_bubble()
 
     def _open_question_bubble(self):
-        """在 Qt 线程中创建并显示疑难气泡（与投递气泡相互独立）。"""
-        if (self._question_bubble is None
-                or not shiboken6.isValid(self._question_bubble)):
-            self._question_bubble = QuestionBubble(
-                on_open=self._open_question_window,
-                on_hide=self._hide_question_bubble,
-                on_moved=self._question_bubble_moved,
-            )
-        self._question_bubble.set_count(self.db.count_questions())
-        self._question_bubble.show_at(self.config.get("question_bubble_x", -1),
-                                      self.config.get("question_bubble_y", -1))
+        """在 Qt 线程中显示疑难气泡（与投递气泡共用一个虚拟框）。"""
+        group = self._ensure_bubble_group()
+        group.show_at(*self._bubble_group_position())
+        group.set_count(self.db.count_questions())
+        group.set_question_visible(True)
+        group.sync_visibility()
         self.config["question_bubble_enabled"] = True
         self._save_config()
         self._refresh_tray_menu()
 
     def _hide_question_bubble(self):
-        """隐藏疑难气泡并记住开关状态。"""
-        if (self._question_bubble is not None
-                and shiboken6.isValid(self._question_bubble)):
-            self._question_bubble.hide()
+        """隐藏疑难气泡并记住开关状态；投递气泡留在虚拟框中。"""
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            self._bubble_group.set_question_visible(False)
+            self._bubble_group.sync_visibility()
         self.config["question_bubble_enabled"] = False
         self._save_config()
         self._refresh_tray_menu()
-
-    def _question_bubble_moved(self, x, y):
-        """疑难气泡被拖动后记住位置。"""
-        self.config["question_bubble_x"] = int(x)
-        self.config["question_bubble_y"] = int(y)
-        self._save_config()
 
     def _open_question_window(self):
         """在 Qt 线程中打开阅读疑难清单窗口。"""
@@ -1358,8 +1388,7 @@ class OfficeAssistant:
         # 干净关闭 Qt 窗口与事件循环（避免退出时崩溃）
         try:
             self.qt.shutdown(windows=[self._diary_win, self._todo_win,
-                                      self._bubble, self._question_win,
-                                      self._question_bubble])
+                                  self._bubble_group, self._question_win])
         except Exception:
             pass
         self._release_singleton()

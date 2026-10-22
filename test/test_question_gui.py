@@ -59,14 +59,20 @@ class QuestionBubbleTests(unittest.TestCase):
         shiboken6.delete(self.bubble)
         self.app.processEvents()
 
-    def test_count_text(self):
+    def test_count_text_and_numeric_badge(self):
         self.assertEqual(self.bubble.title_label.text(), "疑难")
         self.bubble.set_count(0)
         self.assertEqual(self.bubble.status_label.text(), "暂无疑问")
+        self.assertFalse(self.bubble.count_badge.isVisibleTo(self.bubble))
         self.bubble.set_count(3)
         self.assertEqual(self.bubble.status_label.text(), "3 条待解决")
+        self.assertTrue(self.bubble.count_badge.isVisibleTo(self.bubble))
+        self.assertEqual(self.bubble.count_badge.text(), "3")
         self.bubble.set_count(None)
         self.assertEqual(self.bubble.status_label.text(), "暂无疑问")
+        self.assertFalse(self.bubble.count_badge.isVisibleTo(self.bubble))
+        self.assertFalse(self.bubble.title_label.isVisibleTo(self.bubble))
+        self.assertFalse(self.bubble.status_label.isVisibleTo(self.bubble))
 
     def test_left_click_opens_list(self):
         self.bubble._press_offset = QPoint(0, 0)

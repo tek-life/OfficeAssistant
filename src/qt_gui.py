@@ -1356,23 +1356,29 @@ BUBBLE_ERROR = "error"
 
 BUBBLE_STYLE = """
 QWidget#captureBubble {
-    background: rgba(255, 255, 255, 0.97);
-    border: 1px solid #dcdce3;
-    border-radius: 17px;
+    background: rgba(255, 255, 255, 0.50);
+    border: 1px solid rgba(217, 217, 227, 0.60);
+    border-radius: 26px;
 }
-QWidget#captureBubble:hover { background: #ffffff; border-color: #c9cbd2; }
+QWidget#captureBubble:hover {
+    background: rgba(255, 255, 255, 0.62);
+    border-color: rgba(200, 202, 208, 0.75);
+}
 QLabel#bubbleIcon {
-    background: #f4f4f6;
-    border-radius: 16px;
-    color: #202123;
-    font-size: 14px;
+    background: transparent;
+    color: #10a37f;
+    font-size: 21px;
     font-weight: 600;
 }
-QLabel#bubbleTitle { color: #202123; font-size: 12px; font-weight: 600; background: transparent; }
-QLabel#bubbleStatus { color: #6e6e80; font-size: 10px; background: transparent; }
-QWidget#captureBubble[state="busy"] QLabel#bubbleStatus { color: #6e6e80; }
-QWidget#captureBubble[state="ok"] QLabel#bubbleStatus { color: #0f8a5f; }
-QWidget#captureBubble[state="error"] QLabel#bubbleStatus { color: #c2312b; }
+QLabel#bubbleStateDot {
+    background: rgba(232, 232, 237, 0.90);
+    border: 2px solid rgba(255, 255, 255, 0.90);
+    border-radius: 7px;
+}
+QWidget#captureBubble[state="busy"] QLabel#bubbleStateDot { background: #2f80ed; }
+QWidget#captureBubble[state="ok"] QLabel#bubbleStateDot { background: #10a37f; }
+QWidget#captureBubble[state="error"] QLabel#bubbleStateDot { background: #e5484d; }
+QLabel#bubbleTitle, QLabel#bubbleStatus { background: transparent; }
 """
 
 
@@ -1421,8 +1427,8 @@ class CaptureBubble(QWidget):
     """
 
     def __init__(self, on_capture=None, on_open_diary=None, on_hide=None,
-                 on_moved=None):
-        super().__init__(None)
+                 on_moved=None, parent=None):
+        super().__init__(parent)
         self.on_capture = on_capture
         self.on_open_diary = on_open_diary
         self.on_hide = on_hide
@@ -1434,61 +1440,68 @@ class CaptureBubble(QWidget):
         self._reset_timer = QTimer(self)
         self._reset_timer.setSingleShot(True)
         self._reset_timer.timeout.connect(self._reset)
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
-                            | Qt.WindowStaysOnTopHint
-                            | Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(158, 72)
+        if parent is None:
+            self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint
+                                | Qt.WindowDoesNotAcceptFocus)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(72, 72)
         self.setToolTip("左键：记录选中内容\n右键：更多投递方式\n拖动：移动气泡")
         self._build_ui()
         self._apply_state()
 
     def _build_ui(self):
+        """投递入口只保留一个圆形气泡，状态用边缘圆点表达。"""
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(0)
 
         self.card = QWidget(self)
         self.card.setObjectName("captureBubble")
+        self.card.setFixedSize(52, 52)
         self.card.setAttribute(Qt.WA_StyledBackground, True)
         self.card.setCursor(Qt.PointingHandCursor)
-        root_layout.addWidget(self.card)
+        root_layout.addWidget(self.card, 0, Qt.AlignCenter)
 
-        layout = QHBoxLayout(self.card)
-        layout.setContentsMargins(14, 10, 16, 10)
-        layout.setSpacing(10)
+        icon_layout = QVBoxLayout(self.card)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
 
         self.icon_label = QLabel("↗", self.card)
         self.icon_label.setObjectName("bubbleIcon")
-        self.icon_label.setFixedSize(32, 32)
         self.icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.icon_label)
+        self.icon_label.setFont(QFont(BASE_FONT, 12, QFont.Weight.DemiBold))
+        self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        icon_layout.addWidget(self.icon_label, 0, Qt.AlignCenter)
 
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(1)
+        self.state_dot = QLabel(self.card)
+        self.state_dot.setObjectName("bubbleStateDot")
+        self.state_dot.setGeometry(37, 37, 15, 15)
+        self.state_dot.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        # 保留状态文本 API / 可访问性信息，但圆形气泡本身不再承载文字。
         self.title_label = QLabel("投递", self.card)
         self.title_label.setObjectName("bubbleTitle")
+        self.title_label.setAccessibleName("投递气泡")
+        self.title_label.hide()
         self.status_label = QLabel("记录选中内容", self.card)
         self.status_label.setObjectName("bubbleStatus")
         self.status_label.setFont(QFont(BASE_FONT, 8))
-        text_layout.addWidget(self.title_label)
-        text_layout.addWidget(self.status_label)
-        layout.addLayout(text_layout)
-
-        self.title_label.setAccessibleName("投递气泡")
         self.status_label.setAccessibleName("投递状态")
+        self.status_label.hide()
+
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(18)
+        shadow.setBlurRadius(14)
         shadow.setXOffset(0)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(0, 0, 0, 64))
+        shadow.setYOffset(3)
+        shadow.setColor(QColor(0, 0, 0, 46))
         self.card.setGraphicsEffect(shadow)
 
     def _apply_state(self):
         self.card.setProperty("state", self._state)
         self.setStyleSheet(BUBBLE_STYLE)
-        for widget in (self.card, self.title_label, self.status_label):
+        for widget in (self.card, self.icon_label, self.state_dot):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
 
@@ -1516,6 +1529,9 @@ class CaptureBubble(QWidget):
 
     # --- 位置 ---
     def show_at(self, x, y):
+        if self.parentWidget() is not None:
+            self.setVisible(True)
+            return
         if x is None or y is None or int(x) < 0 or int(y) < 0:
             self._move_default()
         else:
@@ -1523,6 +1539,10 @@ class CaptureBubble(QWidget):
             self._clamp()
         self.show()
         self.raise_()
+
+    def _drag_target(self):
+        """分组内拖动整个虚拟框；独立使用时拖动自身。"""
+        return self.window() if self.parentWidget() is not None else self
 
     def _move_default(self):
         screen = QApplication.primaryScreen()
@@ -1545,8 +1565,9 @@ class CaptureBubble(QWidget):
     # --- 交互 ---
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            target = self._drag_target()
             self._press_offset = (event.globalPosition().toPoint()
-                                  - self.frameGeometry().topLeft())
+                                  - target.frameGeometry().topLeft())
             self._dragged = False
             event.accept()
         elif event.button() == Qt.RightButton:
@@ -1556,7 +1577,8 @@ class CaptureBubble(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._press_offset is not None and (event.buttons() & Qt.LeftButton):
-            self.move(event.globalPosition().toPoint() - self._press_offset)
+            target = self._drag_target()
+            target.move(event.globalPosition().toPoint() - self._press_offset)
             self._dragged = True
             event.accept()
         else:
@@ -1565,12 +1587,13 @@ class CaptureBubble(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._press_offset is not None:
             dragged = self._dragged
+            target = self._drag_target()
             self._press_offset = None
             self._dragged = False
             if dragged:
-                self._clamp()
+                target._clamp()
                 if self.on_moved:
-                    self.on_moved(self.x(), self.y())
+                    self.on_moved(target.x(), target.y())
             else:
                 self._dispatch("selection")
             event.accept()
@@ -1607,7 +1630,7 @@ class CaptureBubble(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not self._no_activate_applied:
+        if self.parentWidget() is None and not self._no_activate_applied:
             _set_no_activate(self)
             self._no_activate_applied = True
 
@@ -1617,20 +1640,29 @@ class CaptureBubble(QWidget):
 
 QUESTION_BUBBLE_STYLE = """
 QWidget#questionBubble {
-    background: rgba(255, 255, 255, 0.97);
-    border: 1px solid #dcdce3;
-    border-radius: 17px;
+    background: rgba(255, 255, 255, 0.50);
+    border: 1px solid rgba(217, 217, 227, 0.60);
+    border-radius: 26px;
 }
-QWidget#questionBubble:hover { background: #ffffff; border-color: #c9cbd2; }
+QWidget#questionBubble:hover {
+    background: rgba(255, 255, 255, 0.62);
+    border-color: rgba(200, 202, 208, 0.75);
+}
 QLabel#questionBubbleIcon {
-    background: #f4f4f6;
-    border-radius: 16px;
-    color: #202123;
-    font-size: 14px;
+    background: transparent;
+    color: #e5484d;
+    font-size: 23px;
     font-weight: 600;
 }
-QLabel#questionBubbleTitle { color: #202123; font-size: 12px; font-weight: 600; background: transparent; }
-QLabel#questionBubbleStatus { color: #6e6e80; font-size: 10px; background: transparent; }
+QLabel#questionCountBadge {
+    background: rgba(229, 72, 77, 0.95);
+    color: #ffffff;
+    border: 2px solid rgba(255, 255, 255, 0.90);
+    border-radius: 11px;
+    font-size: 9px;
+    font-weight: 600;
+}
+QLabel#questionBubbleTitle, QLabel#questionBubbleStatus { background: transparent; }
 """
 
 
@@ -1641,8 +1673,9 @@ class QuestionBubble(QWidget):
     并显示当前待解决的条数。
     """
 
-    def __init__(self, on_open=None, on_hide=None, on_moved=None):
-        super().__init__(None)
+    def __init__(self, on_open=None, on_hide=None, on_moved=None,
+                 parent=None):
+        super().__init__(parent)
         self.on_open = on_open
         self.on_hide = on_hide
         self.on_moved = on_moved
@@ -1650,64 +1683,79 @@ class QuestionBubble(QWidget):
         self._dragged = False
         self._no_activate_applied = False
         self.setObjectName("questionBubbleRoot")
-        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
-                            | Qt.WindowStaysOnTopHint
-                            | Qt.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(148, 72)
+        if parent is None:
+            self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                                | Qt.WindowStaysOnTopHint
+                                | Qt.WindowDoesNotAcceptFocus)
+            self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setFixedSize(72, 72)
         self.setToolTip("左键：打开疑难清单  右键：更多操作  拖动：移动气泡")
         self._build_ui()
 
     def _build_ui(self):
+        """疑难入口是一个圆形气泡；数量只用数字徽标表达。"""
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(0)
 
         self.card = QWidget(self)
         self.card.setObjectName("questionBubble")
+        self.card.setFixedSize(52, 52)
         self.card.setAttribute(Qt.WA_StyledBackground, True)
         self.card.setCursor(Qt.PointingHandCursor)
-        root_layout.addWidget(self.card)
+        root_layout.addWidget(self.card, 0, Qt.AlignCenter)
 
-        layout = QHBoxLayout(self.card)
-        layout.setContentsMargins(13, 10, 15, 10)
-        layout.setSpacing(10)
+        icon_layout = QVBoxLayout(self.card)
+        icon_layout.setContentsMargins(0, 0, 0, 0)
+        icon_layout.setSpacing(0)
 
         self.icon_label = QLabel("？", self.card)
         self.icon_label.setObjectName("questionBubbleIcon")
-        self.icon_label.setFixedSize(32, 32)
         self.icon_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.icon_label)
+        self.icon_label.setFont(QFont(BASE_FONT, 13, QFont.Weight.DemiBold))
+        self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        icon_layout.addWidget(self.icon_label, 0, Qt.AlignCenter)
 
-        text_layout = QVBoxLayout()
-        text_layout.setSpacing(1)
+        self.count_badge = QLabel("", self.card)
+        self.count_badge.setObjectName("questionCountBadge")
+        self.count_badge.setGeometry(34, 1, 22, 22)
+        self.count_badge.setAlignment(Qt.AlignCenter)
+        self.count_badge.setFont(QFont(BASE_FONT, 7, QFont.Weight.DemiBold))
+        self.count_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.count_badge.hide()
+
+        # 文案保留给辅助技术和既有 API；可见面上只显示数字。
         self.title_label = QLabel("疑难", self.card)
         self.title_label.setObjectName("questionBubbleTitle")
+        self.title_label.setAccessibleName("疑难气泡")
+        self.title_label.hide()
         self.status_label = QLabel("", self.card)
         self.status_label.setObjectName("questionBubbleStatus")
         self.status_label.setFont(QFont(BASE_FONT, 8))
-        text_layout.addWidget(self.title_label)
-        text_layout.addWidget(self.status_label)
-        layout.addLayout(text_layout)
-
-        self.title_label.setAccessibleName("疑难气泡")
         self.status_label.setAccessibleName("疑难状态")
+        self.status_label.hide()
+
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(18)
+        shadow.setBlurRadius(14)
         shadow.setXOffset(0)
-        shadow.setYOffset(4)
-        shadow.setColor(QColor(0, 0, 0, 64))
+        shadow.setYOffset(3)
+        shadow.setColor(QColor(0, 0, 0, 46))
         self.card.setGraphicsEffect(shadow)
         self.setStyleSheet(QUESTION_BUBBLE_STYLE)
 
     def set_count(self, count):
-        """更新气泡上的待解决条数。"""
+        """更新气泡上的待解决条数：可见面只显示数字。"""
         count = int(count or 0)
+        self.count_badge.setText(str(count))
+        self.count_badge.setVisible(count > 0)
         self.status_label.setText("%d 条待解决" % count if count else "暂无疑问")
 
     # --- 位置 ---
     def show_at(self, x, y):
+        if self.parentWidget() is not None:
+            self.setVisible(True)
+            return
         if x is None or y is None or int(x) < 0 or int(y) < 0:
             self._move_default()
         else:
@@ -1715,6 +1763,10 @@ class QuestionBubble(QWidget):
             self._clamp()
         self.show()
         self.raise_()
+
+    def _drag_target(self):
+        """分组内拖动整个虚拟框；独立使用时拖动自身。"""
+        return self.window() if self.parentWidget() is not None else self
 
     def _move_default(self):
         screen = QApplication.primaryScreen()
@@ -1737,8 +1789,9 @@ class QuestionBubble(QWidget):
     # --- 交互 ---
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
+            target = self._drag_target()
             self._press_offset = (event.globalPosition().toPoint()
-                                  - self.frameGeometry().topLeft())
+                                  - target.frameGeometry().topLeft())
             self._dragged = False
             event.accept()
         elif event.button() == Qt.RightButton:
@@ -1748,7 +1801,8 @@ class QuestionBubble(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._press_offset is not None and (event.buttons() & Qt.LeftButton):
-            self.move(event.globalPosition().toPoint() - self._press_offset)
+            target = self._drag_target()
+            target.move(event.globalPosition().toPoint() - self._press_offset)
             self._dragged = True
             event.accept()
         else:
@@ -1757,12 +1811,13 @@ class QuestionBubble(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._press_offset is not None:
             dragged = self._dragged
+            target = self._drag_target()
             self._press_offset = None
             self._dragged = False
             if dragged:
-                self._clamp()
+                target._clamp()
                 if self.on_moved:
-                    self.on_moved(self.x(), self.y())
+                    self.on_moved(target.x(), target.y())
             else:
                 self._open()
             event.accept()
@@ -1792,9 +1847,119 @@ class QuestionBubble(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if not self._no_activate_applied:
+        if self.parentWidget() is None and not self._no_activate_applied:
             _set_no_activate(self)
             self._no_activate_applied = True
+
+
+BUBBLE_GROUP_STYLE = """
+QWidget#bubbleGroup {
+    background: transparent;
+    border: none;
+}
+"""
+
+
+class BubbleGroup(QWidget):
+    """一个不可见的虚拟框：把投递与疑难气泡垂直排列并整体拖动。
+
+    容器本身没有背景和边框；两个子气泡保持同一横坐标。窗口不抢焦点，
+    保证投递气泡注入 Ctrl+C 时仍然作用于用户原来的前台窗口。
+    """
+
+    SPACING = 16
+
+    def __init__(self, on_capture=None, on_open_diary=None,
+                 on_hide_capture=None, on_open_question=None,
+                 on_hide_question=None, on_moved=None):
+        super().__init__(None)
+        self.on_moved = on_moved
+        self.setObjectName("bubbleGroup")
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint
+                            | Qt.WindowStaysOnTopHint
+                            | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+
+        self.capture_bubble = CaptureBubble(
+            on_capture=on_capture,
+            on_open_diary=on_open_diary,
+            on_hide=on_hide_capture,
+            on_moved=on_moved,
+            parent=self,
+        )
+        self.question_bubble = QuestionBubble(
+            on_open=on_open_question,
+            on_hide=on_hide_question,
+            on_moved=on_moved,
+            parent=self,
+        )
+        # 虚拟框创建时两个入口都处于关闭状态；显示开关由调用方逐个控制。
+        self.capture_bubble.hide()
+        self.question_bubble.hide()
+        for bubble in (self.capture_bubble, self.question_bubble):
+            policy = bubble.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            bubble.setSizePolicy(policy)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(self.SPACING)
+        layout.addWidget(self.capture_bubble, 0, Qt.AlignHCenter)
+        layout.addWidget(self.question_bubble, 0, Qt.AlignHCenter)
+        self.setFixedSize(72, 72 * 2 + self.SPACING)
+        self.setToolTip("投递 / 疑难气泡组：拖动任意气泡可整体移动")
+        self.setStyleSheet(BUBBLE_GROUP_STYLE)
+
+    def show_at(self, x, y):
+        if x is None or y is None or int(x) < 0 or int(y) < 0:
+            self._move_default()
+        else:
+            self.move(int(x), int(y))
+            self._clamp()
+        self.show()
+        self.raise_()
+
+    def set_capture_visible(self, visible):
+        self.capture_bubble.setVisible(bool(visible))
+
+    def set_question_visible(self, visible):
+        self.question_bubble.setVisible(bool(visible))
+
+    def set_count(self, count):
+        self.question_bubble.set_count(count)
+
+    def has_visible_bubble(self):
+        return (self.capture_bubble.isVisibleTo(self)
+                or self.question_bubble.isVisibleTo(self))
+
+    def sync_visibility(self):
+        if self.has_visible_bubble():
+            self.show()
+        else:
+            self.hide()
+
+    def _move_default(self):
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        self.move(area.right() - self.width() - 24, area.top() + 96)
+
+    def _clamp(self):
+        screen = QApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        x = min(max(self.x(), area.left()), area.right() - self.width() + 1)
+        y = min(max(self.y(), area.top()), area.bottom() - self.height() + 1)
+        self.move(x, y)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        _set_no_activate(self)
 
 
 class QuestionWindow(ChromeWindow):
