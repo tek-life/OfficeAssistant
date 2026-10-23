@@ -39,6 +39,7 @@ class Database:
                 sort_order   INTEGER NOT NULL DEFAULT 0,
                 created_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 completed_at TEXT,
+                archived_at  TEXT,
                 updated_at   TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
 
@@ -51,6 +52,7 @@ class Database:
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 date       TEXT    NOT NULL UNIQUE,
                 content    TEXT    NOT NULL DEFAULT '',
+                weather    TEXT    NOT NULL DEFAULT '',
                 created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
             );
@@ -60,22 +62,45 @@ class Database:
                 value      TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
             );
+
+            CREATE TABLE IF NOT EXISTS questions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                url         TEXT    NOT NULL DEFAULT '',
+                title       TEXT    NOT NULL DEFAULT '',
+                quote       TEXT    NOT NULL DEFAULT '',
+                question    TEXT    NOT NULL DEFAULT '',
+                category    TEXT    NOT NULL DEFAULT '',
+                priority    INTEGER NOT NULL DEFAULT 0,
+                note        TEXT    NOT NULL DEFAULT '',
+                anchor      TEXT    NOT NULL DEFAULT '',
+                resolved    INTEGER NOT NULL DEFAULT 0,
+                resolved_at TEXT,
+                created_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
+                updated_at  TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_questions_resolved
+                ON questions(resolved, priority);
         """)
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(todos)")}
+        if "archived_at" not in columns:
+            self.conn.execute("ALTER TABLE todos ADD COLUMN archived_at TEXT")
+        note_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(daily_notes)")}
+        if "weather" not in note_columns:
+            self.conn.execute("ALTER TABLE daily_notes ADD COLUMN weather TEXT NOT NULL DEFAULT ''")
         self.conn.commit()
 
     # ── Todos CRUD ──────────────────────────────────────────
 
-    def get_todos(self, category: str = "") -> list:
-        """获取待办列表，按 sort_order 排序。"""
+    def get_todos(self, category: str = "", *, archived: bool = False) -> list:
+        archive_filter = "IS NOT NULL" if archived else "IS NULL"
+        order = "archived_at DESC, id DESC" if archived else "sort_order, id"
+        sql = f"SELECT * FROM todos WHERE archived_at {archive_filter}"
+        params = []
         if category:
-            rows = self.conn.execute(
-                "SELECT * FROM todos WHERE category=? ORDER BY sort_order, id",
-                (category,),
-            ).fetchall()
-        else:
-            rows = self.conn.execute(
-                "SELECT * FROM todos ORDER BY sort_order, id"
-            ).fetchall()
+            sql += " AND category=?"
+            params.append(category)
+        rows = self.conn.execute(f"{sql} ORDER BY {order}", params).fetchall()
         return [dict(r) for r in rows]
 
     def add_todo(self, text: str, category: str = "", priority: int = 0,
@@ -96,7 +121,7 @@ class Database:
     def toggle_todo(self, todo_id: int):
         """切换完成状态，自动记录/清除 completed_at。"""
         row = self.conn.execute(
-            "SELECT done FROM todos WHERE id=?", (todo_id,)
+            "SELECT done FROM todos WHERE id=? AND archived_at IS NULL", (todo_id,)
         ).fetchone()
         if row is None:
             return
@@ -104,8 +129,25 @@ class Database:
         completed = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if new_done else None
         self.conn.execute(
             "UPDATE todos SET done=?, completed_at=?, "
-            "updated_at=datetime('now','localtime') WHERE id=?",
+            "updated_at=datetime('now','localtime') "
+            "WHERE id=? AND archived_at IS NULL",
             (new_done, completed, todo_id),
+        )
+        self.conn.commit()
+
+    def archive_todo(self, todo_id: int):
+        self.conn.execute(
+            "UPDATE todos SET archived_at=?, updated_at=datetime('now','localtime') "
+            "WHERE id=? AND done=1 AND archived_at IS NULL",
+            (datetime.now().isoformat(sep=" ", timespec="microseconds"), todo_id),
+        )
+        self.conn.commit()
+
+    def restore_todo(self, todo_id: int):
+        self.conn.execute(
+            "UPDATE todos SET archived_at=NULL, "
+            "updated_at=datetime('now','localtime') "
+            "WHERE id=? AND archived_at IS NOT NULL", (todo_id,),
         )
         self.conn.commit()
 
@@ -144,37 +186,130 @@ class Database:
     # ── Daily Notes CRUD ────────────────────────────────────
 
     def get_daily_note(self, date_str: str) -> dict:
-        """获取指定日期的日志，不存在则自动创建空记录。"""
         row = self.conn.execute(
             "SELECT * FROM daily_notes WHERE date=?", (date_str,)
         ).fetchone()
-        if row:
-            return dict(row)
-        self.conn.execute(
-            "INSERT INTO daily_notes (date) VALUES (?)", (date_str,)
-        )
-        self.conn.commit()
-        row = self.conn.execute(
-            "SELECT * FROM daily_notes WHERE date=?", (date_str,)
-        ).fetchone()
-        return dict(row)
+        return dict(row) if row else {"date": date_str, "content": "", "weather": ""}
 
-    def save_daily_note(self, date_str: str, content: str):
+    def save_daily_note(self, date_str: str, content: str, weather: str = ""):
         """保存日志内容（upsert）。"""
         self.conn.execute(
-            "INSERT INTO daily_notes (date, content) VALUES (?, ?) "
+            "INSERT INTO daily_notes (date, content, weather) VALUES (?, ?, ?) "
             "ON CONFLICT(date) DO UPDATE SET content=excluded.content, "
-            "updated_at=datetime('now','localtime')",
-            (date_str, content),
+            "weather=CASE WHEN daily_notes.weather='' THEN excluded.weather "
+            "ELSE daily_notes.weather END, updated_at=datetime('now','localtime')",
+            (date_str, content, weather if content.strip() else ""),
         )
         self.conn.commit()
 
+    def save_daily_note_weather(self, date_str: str, weather: str) -> str:
+        note = self.get_daily_note(date_str)
+        if not note["content"].strip():
+            return ""
+        if note["weather"]:
+            return note["weather"]
+        self.conn.execute(
+            "UPDATE daily_notes SET weather=? WHERE date=? AND weather=''",
+            (weather, date_str),
+        )
+        self.conn.commit()
+        return weather
+
+    def append_daily_note(self, date_str: str, entry: str) -> str:
+        """把一段 Markdown 条目追加到当天日志末尾，保留已有内容与天气。"""
+        old = (self.get_daily_note(date_str).get("content") or "").rstrip()
+        merged = f"{old}\n\n{entry}" if old else entry
+        self.save_daily_note(date_str, merged)
+        return merged
+
     def get_all_note_dates(self) -> list:
-        """返回所有日志日期（新→旧）。"""
         rows = self.conn.execute(
-            "SELECT date FROM daily_notes ORDER BY date DESC"
+            "SELECT date, content FROM daily_notes ORDER BY date DESC"
+        )
+        return [r["date"] for r in rows if r["content"].strip()]
+
+    # --- 阅读疑难 CRUD ---
+
+    def get_questions(self, *, resolved=None) -> list:
+        """阅读疑难列表；resolved=None 取全部，True/False 只看已解决/未解决。
+
+        排序：未解决的在前，其次按优先级、创建时间倒序，新记录排在最上面。
+        """
+        sql = "SELECT * FROM questions"
+        params = []
+        if resolved is not None:
+            sql += " WHERE resolved=?"
+            params.append(1 if resolved else 0)
+        rows = self.conn.execute(
+            f"{sql} ORDER BY resolved, priority DESC, created_at DESC, id DESC",
+            params,
         ).fetchall()
-        return [r["date"] for r in rows]
+        return [dict(r) for r in rows]
+
+    def get_question(self, question_id: int):
+        row = self.conn.execute(
+            "SELECT * FROM questions WHERE id=?", (question_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def add_question(self, url: str = "", title: str = "", quote: str = "",
+                     question: str = "", category: str = "", priority: int = 0,
+                     note: str = "", anchor: str = "") -> int:
+        """新增一条阅读疑难，返回新记录 id。"""
+        cur = self.conn.execute(
+            "INSERT INTO questions (url, title, quote, question, category, "
+            "priority, note, anchor) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (url, title, quote, question, category, priority, note, anchor),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def update_question(self, question_id: int, **kwargs):
+        """更新疑难字段（url / title / quote / question / category / priority /
+        note / anchor）。"""
+        allowed = {"url", "title", "quote", "question", "category",
+                   "priority", "note", "anchor"}
+        fields, values = [], []
+        for k, v in kwargs.items():
+            if k not in allowed:
+                continue
+            fields.append(f"{k}=?")
+            values.append(v)
+        if not fields:
+            return
+        fields.append("updated_at=datetime('now','localtime')")
+        values.append(question_id)
+        self.conn.execute(
+            f"UPDATE questions SET {', '.join(fields)} WHERE id=?", values
+        )
+        self.conn.commit()
+
+    def set_question_resolved(self, question_id: int, resolved: bool):
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S") if resolved else None
+        self.conn.execute(
+            "UPDATE questions SET resolved=?, resolved_at=?, "
+            "updated_at=datetime('now','localtime') WHERE id=?",
+            (1 if resolved else 0, stamp, question_id),
+        )
+        self.conn.commit()
+
+    def toggle_question_resolved(self, question_id: int):
+        row = self.conn.execute(
+            "SELECT resolved FROM questions WHERE id=?", (question_id,)
+        ).fetchone()
+        if row is None:
+            return
+        self.set_question_resolved(question_id, not row["resolved"])
+
+    def delete_question(self, question_id: int):
+        self.conn.execute("DELETE FROM questions WHERE id=?", (question_id,))
+        self.conn.commit()
+
+    def count_questions(self, *, resolved: bool = False) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM questions WHERE resolved=?",
+            (1 if resolved else 0,),
+        ).fetchone()[0]
 
     # ── Settings ────────────────────────────────────────────
 

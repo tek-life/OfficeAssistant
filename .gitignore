@@ -10,10 +10,15 @@ rendered_wallpaper.bmp
 .original_wallpaper.txt
 *.pid
 *.log
+.runtmp/
 
 # User data (SQLite) & migration backups
-data/
+db/
 *.bak
+
+# Local/legacy config (settings actually live in the db/ app_settings table)
+config/*
+!config/.gitkeep
 
 # Python
 __pycache__/
@@ -23,3 +28,6 @@ __pycache__/
 # IDE
 .vscode/
 .idea/
+
+# Scratch / intermediate outputs (previews, temp exports, helper scripts)
+tmp/

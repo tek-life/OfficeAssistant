@@ -3,17 +3,17 @@
 办公助手 — 集成今日待办、工作日志与番茄钟；把每日 TODO 以便签风格渲染到桌面壁纸上。
 
 用法:
-  1. 安装依赖:  pip install Pillow pystray
-  2. 运行:      python sticky_wallpaper.py
+  1. 安装依赖:  pip install -r requirements.txt
+  2. 运行:      python src/sticky_wallpaper.py
   3. 右键托盘图标 → 编辑待办 / 工作日志
 
 数据存储:
-  所有数据存储在 data/sticky_wallpaper.db（SQLite）中：
+  所有数据存储在 db/sticky_wallpaper.db（SQLite）中：
   - todos 表:        待办事项
   - daily_notes 表:  工作日志（每天一条，Markdown）
   - app_settings 表: 应用设置
 
-  首次启动会自动从旧的 todos.txt / config.json 迁移数据，
+  首次启动会自动从旧的 todos.txt 与 config/config.json 迁移数据，
   旧文件重命名为 .bak 保留备份。
 """
 
@@ -33,8 +33,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+import shiboken6
+
+import capture
+import question_server
 from db import Database
-from qt_gui import QtGuiManager, DiaryWindow, TodoEditorWindow
+from qt_gui import (QtGuiManager, DiaryWindow, TodoEditorWindow,
+                    CaptureBubble, QuestionBubble, QuestionWindow,
+                    BubbleGroup, BUBBLE_OK, BUBBLE_ERROR, BUBBLE_BUSY)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -56,16 +62,19 @@ if _console_hwnd:
 # ═══════════════════════════════════════════════════════════
 
 # 兼容 PyInstaller 打包后的路径
+# 运行时数据根目录：源码运行时是项目根目录（src 的上一级），
+# 打包后是 exe 所在目录（dist），保证用户数据不随源码目录变化。
 if getattr(sys, 'frozen', False):
-    SCRIPT_DIR = Path(sys.executable).parent.resolve()
+    BASE_DIR = Path(sys.executable).parent.resolve()
 else:
-    SCRIPT_DIR = Path(__file__).parent.resolve()
-TODOS_FILE = SCRIPT_DIR / "todos.txt"
-CONFIG_FILE = SCRIPT_DIR / "config.json"
-DB_DIR = SCRIPT_DIR / "data"
+    BASE_DIR = Path(__file__).resolve().parent.parent
+TODOS_FILE = BASE_DIR / "todos.txt"
+CONFIG_DIR = BASE_DIR / "config"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DB_DIR = BASE_DIR / "db"
 DB_FILE = DB_DIR / "sticky_wallpaper.db"
-BACKUP_WALLPAPER = SCRIPT_DIR / ".original_wallpaper.jpg"
-RENDERED_WALLPAPER = SCRIPT_DIR / "rendered_wallpaper.bmp"
+BACKUP_WALLPAPER = BASE_DIR / ".original_wallpaper.jpg"
+RENDERED_WALLPAPER = BASE_DIR / "rendered_wallpaper.bmp"
 
 # Windows API
 SPI_GETDESKWALLPAPER = 0x0073
@@ -82,6 +91,17 @@ WM_SYSCOMMAND = 0x0112
 # 单例标识
 MUTEX_NAME = "Global\\OfficeAssistant_SingleInstance"
 EVENT_NAME = "Global\\OfficeAssistant_Activate"
+
+# 全局热键：一键把选中内容 / 剪贴板投递到当天工作日志
+HOTKEY_ID_SELECTION = 0xA101
+HOTKEY_ID_CLIPBOARD = 0xA102
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_NOREPEAT = 0x4000
+WM_HOTKEY = 0x0312
+WM_QUIT = 0x0012
+VK_N = 0x4E
 
 
 # ═══════════════════════════════════════════════════════════
@@ -411,6 +431,15 @@ class OfficeAssistant:
         "pomodoro_enabled": False,
         "pomodoro_interval_minutes": 60,
         "pomodoro_break_minutes": 5,
+        "capture_bubble_enabled": True,
+        "capture_bubble_x": -1,
+        "capture_bubble_y": -1,
+        "question_bubble_enabled": True,
+        "question_bubble_x": -1,
+        "question_bubble_y": -1,
+        "bubble_group_x": -1,
+        "bubble_group_y": -1,
+        "question_server_port": 8765,
     }
 
     def __init__(self):
@@ -448,6 +477,13 @@ class OfficeAssistant:
         self.qt = QtGuiManager()
         self._diary_win = None
         self._todo_win = None
+        self._bubble = None
+        self._question_win = None
+        self._question_bubble = None
+        self._bubble_group = None
+        self._question_server = None
+        self._hotkey_thread = None
+        self._hotkey_thread_id = None
 
     # --- 单例保护（Named Mutex + Named Event）---
     def _acquire_singleton(self):
@@ -523,6 +559,15 @@ class OfficeAssistant:
             "pomodoro_enabled": "false",
             "pomodoro_interval_minutes": "60",
             "pomodoro_break_minutes": "5",
+            "capture_bubble_enabled": "true",
+            "capture_bubble_x": "-1",
+            "capture_bubble_y": "-1",
+            "question_bubble_enabled": "true",
+            "question_bubble_x": "-1",
+            "question_bubble_y": "-1",
+            "bubble_group_x": "-1",
+            "bubble_group_y": "-1",
+            "question_server_port": "8765",
         }
         for k, v in defaults.items():
             self.db.conn.execute(
@@ -536,8 +581,13 @@ class OfficeAssistant:
         raw = self.db.get_all_settings()
         cfg = {}
         int_keys = {"refresh_minutes", "margin",
-                    "pomodoro_interval_minutes", "pomodoro_break_minutes"}
-        bool_keys = {"pomodoro_enabled"}
+                    "pomodoro_interval_minutes", "pomodoro_break_minutes",
+                    "capture_bubble_x", "capture_bubble_y",
+                    "question_bubble_x", "question_bubble_y",
+                    "bubble_group_x", "bubble_group_y",
+                    "question_server_port"}
+        bool_keys = {"pomodoro_enabled", "capture_bubble_enabled",
+                     "question_bubble_enabled"}
         for k, v in raw.items():
             if k in int_keys:
                 cfg[k] = int(v)
@@ -937,11 +987,7 @@ class OfficeAssistant:
         else:
             print("[番茄钟] 已关闭")
         # 刷新托盘菜单以更新勾选状态
-        if self.tray:
-            try:
-                self.tray.update_menu()
-            except Exception:
-                pass
+        self._refresh_tray_menu()
         # 立即刷新壁纸，让倒计时马上显示（或消失）
         threading.Thread(target=self.render, daemon=True).start()
 
@@ -974,7 +1020,10 @@ class OfficeAssistant:
         if self._diary_win is None:
             self._diary_win = DiaryWindow(self.db, on_saved=self._refresh_wallpaper)
         today = datetime.now().strftime("%Y-%m-%d")
-        self._diary_win.load_date(today)
+        if self._diary_win.save():
+            self._diary_win.load_date(today)
+        if self._diary_win.calendar_panel.isHidden():
+            self._diary_win.open_history()
         self._diary_win.show()
         self._diary_win.raise_()
         self._diary_win.activateWindow()
@@ -992,15 +1041,354 @@ class OfficeAssistant:
     def _tray_restore(self):
         threading.Thread(target=self.restore, daemon=True).start()
 
+    # --- 一键投递（全局热键捕获选中内容 / 剪贴板 → 工作日志）---
+    def _tray_capture(self, icon=None, item=None):
+        """托盘菜单：记录当前选中的内容。"""
+        threading.Thread(target=self._capture, args=("selection",),
+                         daemon=True).start()
+
+    def _tray_capture_clipboard(self, icon=None, item=None):
+        """托盘菜单：记录剪贴板内容。"""
+        threading.Thread(target=self._capture, args=("clipboard",),
+                         daemon=True).start()
+
+    def _capture(self, mode):
+        """后台线程执行捕获，避免阻塞托盘线程或热键消息循环。"""
+        try:
+            if mode == "clipboard":
+                text, source = capture.grab_clipboard()
+            else:
+                text, source = capture.grab_selection()
+        except Exception as e:
+            print(f"[投递] 捕获失败: {e}")
+            self._notify("投递失败", f"读取内容时出错：{e}")
+            return
+        if not text.strip():
+            self._notify("没有可投递的内容",
+                         "剪贴板里没有文本。" if mode == "clipboard"
+                         else "没有抓到选中内容：先选中文字，再按 Ctrl+Alt+N。")
+            return
+        self._deliver(text, source)
+
+    def _deliver(self, text, source, notify=True):
+        """写入当天日志，并同步已经打开的日志窗口。返回 (日期, 条目)。"""
+        try:
+            result = capture.append_to_diary(self.db, text, source)
+        except Exception as e:
+            print(f"[投递] 写入失败: {e}")
+            if notify:
+                self._notify("投递失败", f"日志写入失败：{e}")
+            return None
+        if result is None:
+            if notify:
+                self._notify("没有可投递的内容", "内容为空，已忽略。")
+            return None
+        date_str, entry = result
+        win = self._diary_win
+        if win is not None:
+            self.qt.post(lambda: self._sync_diary_window(win, entry, date_str))
+        print(f"[投递] 已记入 {date_str} 日志：{entry.splitlines()[0]}")
+        if notify:
+            self._notify("已记入工作日志", entry)
+        return date_str, entry
+
+    def _sync_diary_window(self, win, entry, date_str):
+        """在 Qt 线程里把新条目同步进日志窗口。"""
+        if not shiboken6.isValid(win):
+            return
+        try:
+            win.append_external(entry, date_str)
+        except Exception as e:
+            print(f"[投递] 日志窗口同步失败: {e}")
+
+    def _notify(self, title, message):
+        """托盘气泡提示（pystray 在 Windows 上发原生通知）。"""
+        if self.tray is None:
+            return
+        text = message if len(message) <= 120 else message[:120] + "…"
+        try:
+            self.tray.notify(text, title)
+        except Exception as e:
+            print(f"[提示] 托盘通知失败: {e}")
+
+    # --- 投递气泡（可见的一键投递入口）---
+    def _tray_toggle_bubble(self, icon=None, item=None):
+        """托盘菜单：显示/隐藏桌面投递气泡。"""
+        self.qt.post(self._toggle_capture_bubble)
+
+    def _toggle_capture_bubble(self):
+        """在 Qt 线程中切换投递气泡的显示状态。"""
+        if self.config.get("capture_bubble_enabled", True):
+            self._hide_capture_bubble()
+        else:
+            self._open_capture_bubble()
+
+    def _ensure_bubble_group(self):
+        """在 Qt 线程中创建一次不可见的气泡虚拟框。
+
+        投递与疑难气泡都是这个虚拟框的子控件；拖动任意一个气泡时，
+        整个虚拟框一起移动，两者始终保持同一横坐标。
+        """
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            return self._bubble_group
+
+        self._bubble_group = BubbleGroup(
+            on_capture=self._bubble_capture,
+            on_open_diary=self._open_diary,
+            on_hide_capture=self._hide_capture_bubble,
+            on_open_question=self._open_question_window,
+            on_hide_question=self._hide_question_bubble,
+            on_moved=self._bubble_group_moved,
+        )
+        self._bubble = self._bubble_group.capture_bubble
+        self._question_bubble = self._bubble_group.question_bubble
+        return self._bubble_group
+
+    def _bubble_group_position(self):
+        """取虚拟框位置；首次升级时沿用旧的投递/疑难位置。"""
+        cfg = self.config
+        x = cfg.get("bubble_group_x", -1)
+        y = cfg.get("bubble_group_y", -1)
+        if x < 0:
+            x = cfg.get("capture_bubble_x", -1)
+        if x < 0:
+            x = cfg.get("question_bubble_x", -1)
+        if y < 0:
+            y = cfg.get("capture_bubble_y", -1)
+        if y < 0:
+            y = cfg.get("question_bubble_y", -1)
+        return x, y
+
+    def _open_capture_bubble(self):
+        """在 Qt 线程中显示投递气泡（与疑难气泡共用一个虚拟框）。"""
+        group = self._ensure_bubble_group()
+        group.show_at(*self._bubble_group_position())
+        group.set_capture_visible(True)
+        group.sync_visibility()
+        self.config["capture_bubble_enabled"] = True
+        self._save_config()
+        self._refresh_tray_menu()
+
+    def _hide_capture_bubble(self):
+        """隐藏投递气泡并记住开关状态；疑难气泡留在虚拟框中。"""
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            self._bubble_group.set_capture_visible(False)
+            self._bubble_group.sync_visibility()
+        self.config["capture_bubble_enabled"] = False
+        self._save_config()
+        self._refresh_tray_menu()
+
+    def _bubble_group_moved(self, x, y):
+        """拖动任一气泡后，记住整个虚拟框的位置。"""
+        self.config["bubble_group_x"] = int(x)
+        self.config["bubble_group_y"] = int(y)
+        self._save_config()
+
+    def _bubble_capture(self, mode):
+        """气泡触发投递：后台抓取内容，结果回显到气泡本体。"""
+        self._bubble_apply(BUBBLE_BUSY, "读取中…")
+        threading.Thread(target=self._bubble_capture_worker, args=(mode,),
+                         daemon=True).start()
+
+    def _bubble_capture_worker(self, mode):
+        """后台线程：抓取 → 写入 → 把结果投回 Qt 线程显示。"""
+        try:
+            if mode == "clipboard":
+                text, source = capture.grab_clipboard()
+            else:
+                text, source = capture.grab_selection()
+        except Exception as e:
+            print(f"[投递] 气泡捕获失败: {e}")
+            self._bubble_result(BUBBLE_ERROR, "读取失败")
+            return
+        if not text.strip():
+            self._bubble_result(
+                BUBBLE_ERROR,
+                "剪贴板没有文本" if mode == "clipboard" else "没有选中内容")
+            return
+        outcome = self._deliver(text, source, notify=False)
+        if outcome is None:
+            self._bubble_result(BUBBLE_ERROR, "内容为空")
+            return
+        date_str, _entry = outcome
+        self._bubble_result(BUBBLE_OK, f"已记入 {date_str[5:]}")
+
+    def _bubble_result(self, state, text):
+        """把 worker 的结果投回 Qt 线程显示。"""
+        self.qt.post(lambda: self._bubble_apply(state, text))
+
+    def _bubble_apply(self, state, text):
+        """在 Qt 线程里更新气泡显示。"""
+        bubble = self._bubble
+        if bubble is None or not shiboken6.isValid(bubble):
+            return
+        if state == BUBBLE_BUSY:
+            bubble.set_busy(text)
+        else:
+            bubble.show_result(state, text)
+
+    def _refresh_tray_menu(self):
+        """刷新托盘菜单勾选状态（番茄钟 / 投递气泡 / 疑难气泡）。"""
+        if self.tray is not None:
+            try:
+                self.tray.update_menu()
+            except Exception:
+                pass
+
+    # --- 阅读疑难（收集气泡 + 清单窗口 + 本地接收服务）---
+    def _tray_question(self, icon=None, item=None):
+        """托盘菜单：打开阅读疑难清单。"""
+        self.qt.post(self._open_question_window)
+
+    def _tray_toggle_question_bubble(self, icon=None, item=None):
+        """托盘菜单：显示/隐藏阅读疑难气泡。"""
+        self.qt.post(self._toggle_question_bubble)
+
+    def _toggle_question_bubble(self):
+        """在 Qt 线程中切换疑难气泡的显示状态。"""
+        if self.config.get("question_bubble_enabled", True):
+            self._hide_question_bubble()
+        else:
+            self._open_question_bubble()
+
+    def _open_question_bubble(self):
+        """在 Qt 线程中显示疑难气泡（与投递气泡共用一个虚拟框）。"""
+        group = self._ensure_bubble_group()
+        group.show_at(*self._bubble_group_position())
+        group.set_count(self.db.count_questions())
+        group.set_question_visible(True)
+        group.sync_visibility()
+        self.config["question_bubble_enabled"] = True
+        self._save_config()
+        self._refresh_tray_menu()
+
+    def _hide_question_bubble(self):
+        """隐藏疑难气泡并记住开关状态；投递气泡留在虚拟框中。"""
+        if (self._bubble_group is not None
+                and shiboken6.isValid(self._bubble_group)):
+            self._bubble_group.set_question_visible(False)
+            self._bubble_group.sync_visibility()
+        self.config["question_bubble_enabled"] = False
+        self._save_config()
+        self._refresh_tray_menu()
+
+    def _open_question_window(self):
+        """在 Qt 线程中打开阅读疑难清单窗口。"""
+        if (self._question_win is None
+                or not shiboken6.isValid(self._question_win)):
+            self._question_win = QuestionWindow(
+                self.db, on_changed=self._on_questions_changed)
+        else:
+            self._question_win.refresh_list()
+        self._question_win.show()
+        self._question_win.raise_()
+        self._question_win.activateWindow()
+
+    def _on_questions_changed(self):
+        """清单窗口改动数据后，同步疑难气泡上的待解决条数。"""
+        self._refresh_questions_bubble()
+
+    def _refresh_questions_bubble(self):
+        """把待解决条数同步到疑难气泡（须在 Qt 线程执行）。"""
+        bubble = self._question_bubble
+        if bubble is None or not shiboken6.isValid(bubble):
+            return
+        bubble.set_count(self.db.count_questions())
+
+    def _refresh_questions_view(self):
+        """服务器线程回调后，在 Qt 线程刷新清单窗口与气泡。"""
+        win = self._question_win
+        if win is not None and shiboken6.isValid(win):
+            win.refresh_list()
+        self._refresh_questions_bubble()
+
+    def _notify_question_added(self, qid):
+        """本地接收服务写入新疑难后调用（来自服务器线程）。"""
+        row = self.db.get_question(qid)
+        quote = (row or {}).get("quote") or (row or {}).get("question") or ""
+        self._notify("已记录阅读疑难", quote)
+        self.qt.post(self._refresh_questions_view)
+
+    def _start_question_server(self):
+        """启动本地接收服务；端口被占用时提示而不中断启动。"""
+        port = int(self.config.get("question_server_port", 8765))
+        self._question_server = question_server.QuestionServer(
+            self.db, on_added=self._notify_question_added, port=port)
+        if not self._question_server.start():
+            self._notify("疑难接收未启动",
+                         f"端口 {port} 被占用，请修改配置 question_server_port。")
+
+    # --- 全局热键 ---
+    def _register_hotkeys(self):
+        """注册全局热键，返回是否至少成功一个。"""
+        user32 = ctypes.windll.user32
+        ok_selection = user32.RegisterHotKey(
+            None, HOTKEY_ID_SELECTION, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_N)
+        ok_clipboard = user32.RegisterHotKey(
+            None, HOTKEY_ID_CLIPBOARD,
+            MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, VK_N)
+        if not ok_selection:
+            print("[热键] Ctrl+Alt+N 注册失败（可能已被其他程序占用）")
+        if not ok_clipboard:
+            print("[热键] Ctrl+Alt+Shift+N 注册失败（可能已被其他程序占用）")
+        return bool(ok_selection or ok_clipboard)
+
+    def _hotkey_loop(self):
+        """在专用线程里等待 WM_HOTKEY 消息。
+
+        RegisterHotKey(None, ...) 把热键消息投递到调用线程自己的消息队列，
+        所以注册和等待必须在同一个线程里完成。
+        """
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        if not self._register_hotkeys():
+            return
+        self._hotkey_thread_id = kernel32.GetCurrentThreadId()
+        msg = wintypes.MSG()
+        try:
+            while self._running:
+                if user32.GetMessageW(ctypes.byref(msg), None, 0, 0) in (0, -1):
+                    break
+                if msg.message == WM_HOTKEY:
+                    mode = ("clipboard" if msg.wParam == HOTKEY_ID_CLIPBOARD
+                            else "selection")
+                    threading.Thread(target=self._capture, args=(mode,),
+                                     daemon=True).start()
+        except Exception as e:
+            print(f"[热键] 消息循环结束: {e}")
+        finally:
+            user32.UnregisterHotKey(None, HOTKEY_ID_SELECTION)
+            user32.UnregisterHotKey(None, HOTKEY_ID_CLIPBOARD)
+
+    def _stop_hotkeys(self):
+        """退出前注销全局热键并结束消息循环线程。"""
+        thread_id = self._hotkey_thread_id
+        if thread_id:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
+            except Exception:
+                pass
+        thread = self._hotkey_thread
+        if thread is not None:
+            thread.join(timeout=2)
+        self._hotkey_thread = None
+        self._hotkey_thread_id = None
+
     def _tray_quit(self, icon=None):
         self._running = False
+        self._stop_hotkeys()
         self._pomodoro_enabled = False  # 停止番茄钟线程
         if icon:
             icon.stop()
+        if self._question_server is not None:
+            self._question_server.stop()
         self.restore()
         # 干净关闭 Qt 窗口与事件循环（避免退出时崩溃）
         try:
-            self.qt.shutdown(windows=[self._diary_win, self._todo_win])
+            self.qt.shutdown(windows=[self._diary_win, self._todo_win,
+                                  self._bubble_group, self._question_win])
         except Exception:
             pass
         self._release_singleton()
@@ -1022,6 +1410,13 @@ class OfficeAssistant:
             pystray.MenuItem("刷新壁纸", self._tray_refresh, default=True),
             pystray.MenuItem("编辑待办", self._tray_edit),
             pystray.MenuItem("工作日志", self._tray_diary),
+            pystray.MenuItem("记录选中内容 (Ctrl+Alt+N)", self._tray_capture),
+            pystray.MenuItem("记录剪贴板 (Ctrl+Alt+Shift+N)", self._tray_capture_clipboard),
+            pystray.MenuItem("投递气泡", self._tray_toggle_bubble,
+                             checked=lambda item: self.config.get("capture_bubble_enabled", True)),
+            pystray.MenuItem("阅读疑难", self._tray_question),
+            pystray.MenuItem("疑难气泡", self._tray_toggle_question_bubble,
+                             checked=lambda item: self.config.get("question_bubble_enabled", True)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("番茄钟休息提醒", self._toggle_pomodoro,
                              checked=lambda item: self._pomodoro_enabled),
@@ -1042,9 +1437,21 @@ class OfficeAssistant:
             time.sleep(interval)
 
     def run(self):
+        # 全局热键消息循环（专用线程，注册与等待必须同线程）
+        self._hotkey_thread = threading.Thread(target=self._hotkey_loop,
+                                              daemon=True)
+        self._hotkey_thread.start()
         self.setup_tray()
         # 托盘图标在独立线程运行（避免阻塞主线程导致右键菜单无响应）
         self.tray.run_detached()
+        # 桌面投递气泡（可见的一键投递入口）
+        if self.config.get("capture_bubble_enabled", True):
+            self.qt.post(self._open_capture_bubble)
+        # 本地接收服务：浏览器扩展把阅读疑难投递到这里
+        self._start_question_server()
+        # 阅读疑难气泡（所有疑问的统一入口）
+        if self.config.get("question_bubble_enabled", True):
+            self.qt.post(self._open_question_bubble)
         # 番茄钟后台线程（定时关屏提醒休息）
         self._pomodoro_thread = threading.Thread(
             target=self._pomodoro_loop, daemon=True)
